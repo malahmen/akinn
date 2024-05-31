@@ -369,14 +369,14 @@ read_parameters() {
 # Read parameters from command line
 read_parameters "$@"
 
-# VALIDATE PARAMETERS
+# check nodes common parameters
 # validate the architecture
 validate_architecture "$ARCH"
 # start with the node name
 validate_hostname
-#validate the final IP address
+# validate the node final IP address
 validate_ip_address "$IP"
-# Load versions
+# load existing versions
 load_versions
 # validate the kubernetes version
 validate_kubernetes_version "$VERSION"
