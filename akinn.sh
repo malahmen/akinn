@@ -2,7 +2,8 @@
 
 echo " Automated Kubernetes Installation for New Nodes - without user interaction."
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Must be run as root."
+    echo "Must be run as root. Trying with sudo..."
+    exec sudo "$0" "$@"
     exit 1
 fi
 
@@ -10,8 +11,8 @@ HOSTNAME="" # Node reulting name (from master or worker option).
 MASTER_NODE="" 	# Master node name - if installing one, need a name.
 WORKER_NODE="" 	# Worker node name - if installing one, need a name.
 VERSION="v1.30" # Kubernetes default version.
-CRDS="v3.25.0"  # Kubernetes plugins default version.
-CIDR="10.244.0.0/24" # Network range for kubernetes pods.
+CRDS="v3.25.0"  # Kubernetes Custom Resources Definitions version.
+CIDR="10.244.0.0/24" # Classless Inter-Domain Routing blocks for Kubernetes pods.
 IP=""  			# Worker node needs the master's IP address.
 PORT=""  		# Worker node needs the master's port number.
 TOKEN="" 		# Worker node needs a token to join master. 
@@ -23,10 +24,40 @@ re_port='^[1-9][0-9]*$' # Regex: checks if the input is a positive integer (grea
 re_cidr='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$' # Regex for CIDR block.
 # Use the current node IP as default
 IP=$(ip addr show $(ip route | grep default | awk '{print $5}') | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+K_VERSIONS="" # Kubernetes versions
+K_RELEASES="https://github.com/kubernetes/kubernetes/releases" # Kubernetes releases
+CRDS_VERSIONS="" # Kubernetes Custom Resources Definitions versions
+CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
 
 # Function: prints a help message.
 usage() {
-    echo "Usage: $0 [ -m MASTER_NODE ] [ -w WORKER_NODE ] [ -v VERSION ] [ -c CRDS ] [ -n CIDR ] [ -i IP ] [ -p PORT ] [ -t TOKEN ] [ -h HASH ]" 1>&2 
+    cat << EOF 1>&2
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  -m MASTER_NODE   Set the master node name"
+    echo "  -w WORKER_NODE   Set the worker node name"
+    echo "  -v VERSION       Set the Kubernetes version"
+    echo "  -c CRDS          Set the Kubernetes Custom Resources Definitions version"
+    echo "  -n CIDR          Set the Classless Inter-Domain Routing blocks for Kubernetes pods"
+    echo "  -i IP            Set the master node IP address for the worker"
+    echo "  -p PORT          Set the master node port number for the worker"
+    echo "  -t TOKEN         Set the token for the worker to join the master"
+    echo "  -h HASH          Set the hash for the worker to join the master"
+
+EOF
+}
+
+# Function: loads available versions of Kubernetes and CRDs from their respective repositories.
+# It fetches the versions by scraping GitHub release pages and stores them in K_VERSIONS and CRDS_VERSIONS.
+load_versions() {
+    if ! CRDS_VERSIONS=$(curl -s $CRDS_RELEASES | grep -Eo 'release-v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/release-//' | sort | uniq); then
+        echo "Error: Failed to fetch Custom Resources Definitions versions. Exiting."
+        exit 1
+    fi
+    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo 'Kubernetes v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/Kubernetes-//' | sort | uniq); then
+        echo "Error: Failed to fetch Kubernetes versions. Exiting."
+        exit 1
+    fi
 }
 
 # Function: exits with help message.
@@ -118,8 +149,14 @@ validate_hash() {
 validate_version() {
     local version=$1
     local type=$2  # 'kubernetes' or 'crds'
-    if ! curl -fsSL "https://api.versioncheck.example.com/$type/$version"; then
-        echo "Invalid or unsupported $type version: $version"
+    local versions=""
+    if [ "$type" = "kubernetes" ]; then
+        versions=$K_VERSIONS
+    elif [ "$type" = "crds" ]; then
+        versions=$CRDS_VERSIONS
+    fi
+    if ! echo "$versions" | grep -q "$version"; then
+        echo "Invalid or unsupported $type version: $version. Exiting."
         exit 1
     fi
 }
@@ -297,6 +334,8 @@ done
 validate_hostname
 #validate the final IP address
 validate_ip_address "$IP"
+# Load versions
+load_versions
 # validate the kubernetes version
 validate_kubernetes_version "$VERSION"
 
