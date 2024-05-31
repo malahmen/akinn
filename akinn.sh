@@ -7,29 +7,38 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# Regular expressions for validations
+re_ip='^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$' # Regex: checks if the input is a valid IPv4 address.
+re_port='^[1-9][0-9]*$' # Regex: checks if the input is a positive integer (greater than zero).
+re_cidr='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$' # Regex for CIDR block.
+re_own_ip='^(?<=inet\s)\d+(\.\d+){3}$' # Regex for the current node's IP address.
+
+# Parameters with default values
 HOSTNAME="" # Node reulting name (from master or worker option).
 MASTER_NODE="" 	# Master node name - if installing one, need a name.
 WORKER_NODE="" 	# Worker node name - if installing one, need a name.
 VERSION="v1.30" # Kubernetes default version.
 CRDS="v3.25.0"  # Kubernetes Custom Resources Definitions version.
 CIDR="10.244.0.0/24" # Classless Inter-Domain Routing blocks for Kubernetes pods.
-IP=""  			# Worker node needs the master's IP address.
-PORT=""  		# Worker node needs the master's port number.
-TOKEN="" 		# Worker node needs a token to join master. 
-HASH="" 		# Worker node needs a hash to join master. 
+IP=$(ip addr show $(ip route | grep default | awk '{print $5}') | grep -oP $re_own_ip) # Worker node needs the master's IP address.
+PORT="6443" # Worker node needs the master's port number.
+TOKEN="" # Worker node needs a token to join master. 
+HASH="" # Worker node needs a hash to join master. 
+ARCH="amd64" # Architecture
 
-# Regex: checks if the input is a valid IPv4 address.
-re_ip='^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$' 
-re_port='^[1-9][0-9]*$' # Regex: checks if the input is a positive integer (greater than zero).
-re_cidr='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$' # Regex for CIDR block.
-# Use the current node IP as default
-IP=$(ip addr show $(ip route | grep default | awk '{print $5}') | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+# Variables
 K_VERSIONS="" # Kubernetes versions
 K_RELEASES="https://github.com/kubernetes/kubernetes/releases" # Kubernetes releases
+K_CORE="https://pkgs.k8s.io/core" # Kubernetes core
 CRDS_VERSIONS="" # Kubernetes Custom Resources Definitions versions
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
+CRDS_REPO="https://raw.githubusercontent.com/projectcalico/calico" # Kubernetes Custom Resources Definitions repository
+DOCKER_GPG_KEY="https://download.docker.com/linux/ubuntu/gpg" # Docker GPG key
+DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
 
 # Function: prints a help message.
+# Usage example:
+# usage
 usage() {
     cat << EOF 1>&2
     echo "Usage: $0 [options]"
@@ -43,12 +52,25 @@ usage() {
     echo "  -p PORT          Set the master node port number for the worker"
     echo "  -t TOKEN         Set the token for the worker to join the master"
     echo "  -h HASH          Set the hash for the worker to join the master"
-
+    echo "  -a ARCH          Set the architecture"
 EOF
+}
+
+# Function: validates the architecture input
+# Usage example:
+# validate_architecture "$ARCH"
+validate_architecture() {
+    local arch=$1
+    if [ -z "$arch" ]; then
+        echo "Error: Architecture is not set. Exiting."
+        exit_abnormal
+    fi
 }
 
 # Function: loads available versions of Kubernetes and CRDs from their respective repositories.
 # It fetches the versions by scraping GitHub release pages and stores them in K_VERSIONS and CRDS_VERSIONS.
+# Usage example:
+# load_versions
 load_versions() {
     if ! CRDS_VERSIONS=$(curl -s $CRDS_RELEASES | grep -Eo 'release-v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/release-//' | sort | uniq); then
         echo "Error: Failed to fetch Custom Resources Definitions versions. Exiting."
@@ -61,12 +83,16 @@ load_versions() {
 }
 
 # Function: exits with help message.
+# Usage example:
+# exit_abnormal
 exit_abnormal() {
   usage
   exit 1
 }
 
 # Function: checks if a node name is given
+# Usage example:
+# validate_hostname
 validate_hostname() {
     # master > worker
     if [ -n "$MASTER_NODE" ]; then
@@ -262,6 +288,8 @@ download_and_apply() {
 }
 
 # Function: disable swap and backup fstab
+# Usage example:
+# disable_swap
 disable_swap() {
     cp /etc/fstab /etc/fstab.backup
     swapoff -a
@@ -269,6 +297,8 @@ disable_swap() {
 }
 
 # Function: rollback fstab changes
+# Usage example:
+# rollback_fstab
 rollback_fstab() {
     mv /etc/fstab.backup /etc/fstab
     echo "Restored original fstab configuration."
@@ -284,52 +314,64 @@ exit_error() {
     exit 1
 }
 
-# READ PARAMETERS - Loop: Get the next option;
-while getopts ":m:w:v:c:n:i:p:t:h:" options; do
-  case "${options}" in
-    m)
-      MASTER_NODE=${OPTARG}
-      ;;
-    w)
-      WORKER_NODE=${OPTARG}
-      ;;
-    v)
-      VERSION=${OPTARG}
-      ;;
-    c)
-      CRDS=${OPTARG}
-      ;;
-    n)
-      CIDR=${OPTARG}
-      ;;
-    i)
-      if [ -n "$WORKER_NODE" ]; then
-        IP=${OPTARG}
-      fi
-      ;;
-    p)
-      if [ -n "$WORKER_NODE" ]; then
-        PORT=${OPTARG}
-      fi
-      ;;
-    t)
-      if [ -n "$WORKER_NODE" ]; then
-        TOKEN=${OPTARG}
-      fi
-      ;;
-    h)
-      if [ -n "$WORKER_NODE" ]; then
-        HASH=${OPTARG}
-      fi
-      ;;
-    *) # If unknown (any other) option:
-      echo "Error: Unknown option '-${OPTARG}'."
-      exit_abnormal
-      ;;
-  esac
-done
+# Function: read parameters from command line
+# Usage example:
+# read_parameters "$@"
+read_parameters() {
+  while getopts ":m:w:v:c:n:i:p:t:h:a:" options; do
+    case "${options}" in
+      m)
+        MASTER_NODE=${OPTARG}
+        ;;
+      w)
+        WORKER_NODE=${OPTARG}
+        ;;
+      v)
+        VERSION=${OPTARG}
+        ;;
+      c)
+        CRDS=${OPTARG}
+        ;;
+      n)
+        CIDR=${OPTARG}
+        ;;
+      i)
+        if [ -n "$WORKER_NODE" ]; then
+          IP=${OPTARG}
+        fi
+        ;;
+      p)
+        if [ -n "$WORKER_NODE" ]; then
+          PORT=${OPTARG}
+        fi
+        ;;
+      t)
+        if [ -n "$WORKER_NODE" ]; then
+          TOKEN=${OPTARG}
+        fi
+        ;;
+      h)
+        if [ -n "$WORKER_NODE" ]; then
+          HASH=${OPTARG}
+        fi
+        ;;
+      a)
+        ARCH=${OPTARG}
+        ;;
+      *)
+        echo "Error: Unknown option '-${OPTARG}'."
+        exit 1
+        ;;
+    esac
+  done
+}
+
+# Read parameters from command line
+read_parameters "$@"
 
 # VALIDATE PARAMETERS
+# validate the architecture
+validate_architecture "$ARCH"
 # start with the node name
 validate_hostname
 #validate the final IP address
@@ -376,10 +418,6 @@ echo "Swap disabled successfully."
 
 # add kernel modules to load on boot for containerd (all nodes)
 echo "Adding kernel modules for containerd to be loaded on boot up."
-#execute tee /etc/modules-load.d/containerd.conf <<EOF
-#overlay
-#br_netfilter
-#EOF
 if ! echo "overlay
 br_netfilter" | tee /etc/modules-load.d/containerd.conf > /dev/null; then
     echo "Failed to write module load configurations. Exiting."
@@ -391,11 +429,6 @@ execute modprobe br_netfilter
 
 # configure kernel parameters for networking and IP forwarding related to Kubernetes (all nodes)
 echo "Configuring system kernel parameters for networking and IP forwarding."
-#execute tee /etc/sysctl.d/kubernetes.conf <<EOF
-#net.bridge.bridge-nf-call-ip6tables = 1
-#net.bridge.bridge-nf-call-iptables = 1
-#net.ipv4.ip_forward = 1
-#EOF
 if ! echo "net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
@@ -408,7 +441,6 @@ echo "Reloading."
 execute sysctl --system
 
 # make sure we have the needed packages installed with automated error recovery (all nodes)
-#apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates gpg
 echo "Installing required packages."
 install_package curl
 install_package gnupg2
@@ -419,14 +451,13 @@ install_package gpg
 
 # retrieves the GPG key for Docker, processes it, and saves it in the appropriate location for package management (all nodes)
 echo "Downloading the docker GPG key."
-if ! curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg; then
+if ! curl -fsSL $DOCKER_GPG_KEY | gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg; then
     echo "Failed to download docker GPG key. Please check your internet connection or the URL and try again."
     exit 1
 fi
 # add the Docker repository to the system software sources
 echo "Adding the Docker repository to the system."
-#execute add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-if ! add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"; then
+if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
     echo "Failed to add Docker repository. Exiting."
     exit 1
 fi
@@ -463,14 +494,12 @@ fi
 
 # add kubernetes repositories (all nodes)
 echo "Retrieving the release key file for kubernetes."
-if ! curl -fsSL https://pkgs.k8s.io/core:/stable:/$VERSION/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg; then
+if ! curl -fsSL $K_CORE:/stable:/$VERSION/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg; then
     echo "Failed to retrieve kubernetes release key file. Please check your internet connection or the URL and try again."
     exit 1
 fi
 echo "Adding the Kubernetes repository to the system."
-#execute add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${VERSION}/deb/ /"
-#echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${VERSION}/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
-if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${VERSION}/deb/ /"; then
+if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] $K_CORE:/stable:/${VERSION}/deb/ /"; then
     echo "Failed to add Kubernetes repository. Exiting."
     exit 1
 fi
@@ -503,9 +532,7 @@ if [ -n "$MASTER_NODE" ]; then
     execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
     # throw in some crds plugins (MASTER ONLY)
     echo "Installing Crds."
-    download_and_apply https://raw.githubusercontent.com/projectcalico/calico/$CRDS/manifests/calico.yaml calico.yaml
-    #kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/$CRDS/manifests/calico.yaml
-    #kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.3/manifests/tigera-operator.yaml
+    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
 fi
 
 if [ -n "$WORKER_NODE" ]; then
