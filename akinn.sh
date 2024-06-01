@@ -41,18 +41,18 @@ DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
 # usage
 usage() {
     cat << EOF 1>&2
-    echo "Usage: $0 [options]"
-    echo "Options:"
-    echo "  -m MASTER_NODE   Set the master node name"
-    echo "  -w WORKER_NODE   Set the worker node name"
-    echo "  -v VERSION       Set the Kubernetes version"
-    echo "  -c CRDS          Set the Kubernetes Custom Resources Definitions version"
-    echo "  -n CIDR          Set the Classless Inter-Domain Routing blocks for Kubernetes pods"
-    echo "  -i IP            Set the master node IP address for the worker"
-    echo "  -p PORT          Set the master node port number for the worker"
-    echo "  -t TOKEN         Set the token for the worker to join the master"
-    echo "  -h HASH          Set the hash for the worker to join the master"
-    echo "  -a ARCH          Set the architecture"
+  Usage: $0 [options]
+  Options:
+    -m MASTER_NODE   Set the master node name
+    -w WORKER_NODE   Set the worker node name
+    -v VERSION       Set the Kubernetes version
+    -c CRDS          Set the Kubernetes Custom Resources Definitions version
+    -n CIDR          Set the Classless Inter-Domain Routing blocks for Kubernetes pods
+    -i IP            Set the master node IP address for the worker
+    -p PORT          Set the master node port number for the worker
+    -t TOKEN         Set the token for the worker to join the master
+    -h HASH          Set the hash for the worker to join the master
+    -a ARCH          Set the architecture
 EOF
 }
 
