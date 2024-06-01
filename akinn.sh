@@ -3,7 +3,7 @@
 echo " Automated Kubernetes Installation for New Nodes - without user interaction."
 if [ "$(id -u)" -ne 0 ]; then
     echo " Must be run as root. Trying with sudo..."
-    exec sudo "$0" "$@"
+    exec sudo HOME="$HOME" "$0" "$@"
     exit 1
 fi
 
@@ -12,8 +12,14 @@ re_ip='^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[
 re_port='^[1-9][0-9]*$' # Regex: checks if the input is a positive integer (greater than zero).
 re_cidr='^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$' # Regex for CIDR block.
 re_own_ip='^(?<=inet\s)\d+(\.\d+){3}$' # Regex for the current node's IP address.
-re_kver='Kubernetes v[0-9]+\.[0-9]+\.[0-9]+' # Regex for the kubernetes release version.
+re_kver='Kubernetes\sv[0-9]+\.[0-9]+\.[0-9]+' # Regex for the kubernetes release version.
 re_crds_ver='release-v[0-9]+\.[0-9]+\.[0-9]+' # Regex for the custom resources definitions release version.
+
+# Define color codes
+RED='\033[0;31m'    # execution error messages
+YELLOW='\033[0;33m' # parameters error messages
+GREEN='\033[0;32m'  # regular messages
+NC='\033[0m'  # No Color
 
 # Parameters with default values
 HOSTNAME="" # Node reulting name (from master or worker option).
@@ -41,35 +47,36 @@ DOCKER_GPG_KEY="https://download.docker.com/linux/ubuntu/gpg" # Docker GPG key
 DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
 
 # ERROR MESSAGES
-ERR_FFCRDVER=" Error: Failed to fetch Custom Resources Definitions versions. Exiting."
-ERR_FFKVER=" Error: Failed to fetch Kubernetes versions. Exiting."
-ERR_ANS=" Error: Architecture is not set. Exiting."
-ERR_HNNS=" Error: Node name is not set. Exiting."
-ERR_IPNS=" Error: IP address is not set. Exiting."
-ERR_IIP=" Error: IP address is invalid. Exiting."
-ERR_PRTNS=" Error: PORT number is not set. Exiting."
-ERR_IPRT=" Error: PORT number is invalid. Exiting."
-ERR_TFNS=" Error: TOKEN file path is not set. Exiting."
-ERR_TFNE=" Error: TOKEN file does not exist. Exiting."
-ERR_HFNS=" Error: HASH file path is not set. Exiting."
-ERR_HFNE=" Error: HASH file does not exist. Exiting."
-ERR_IUV=" Error: Invalid or unsupported version. Exiting."
-ERR_KVERNS=" Error: Kubernetes version is not set. Exiting."
-ERR_CDRVERNS=" Error: Custom Resources Definitions version is not set. Exiting."
-ERR_CIDRNS=" Error: CIDR block is not set. Exiting."
-ERR_ICIDR=" Error: Invalid CIDR block. Exiting."
+ERR_FFCRDVER=" Error: Failed to fetch Custom Resources Definitions versions."
+ERR_FFKVER=" Error: Failed to fetch Kubernetes versions."
+ERR_ANS=" Error: Architecture is not set."
+ERR_HNNS=" Error: Node name is not set."
+ERR_IPNS=" Error: IP address is not set."
+ERR_IIP=" Error: IP address is invalid."
+ERR_UNRIP=" Error: IP address is unreachable."
+ERR_PRTNS=" Error: PORT number is not set."
+ERR_IPRT=" Error: PORT number is invalid."
+ERR_TFNS=" Error: TOKEN file path is not set."
+ERR_TFNE=" Error: TOKEN file does not exist."
+ERR_HFNS=" Error: HASH file path is not set."
+ERR_HFNE=" Error: HASH file does not exist."
+ERR_IUV=" Error: Invalid or unsupported version."
+ERR_KVERNS=" Error: Kubernetes version is not set."
+ERR_CDRVERNS=" Error: Custom Resources Definitions version is not set."
+ERR_CIDRNS=" Error: CIDR block is not set."
+ERR_ICIDR=" Error: Invalid CIDR block."
 ERR_FEC=" Error: Failed to execute the command."
-ERR_IRF=" Error: Installation failed after retry. Exiting."
-ERR_RF=" Error: Retry failed. Please check your internet connection or the URL and try again. Exiting."
-ERR_SE=" Error: Script will now exit."
+ERR_IRF=" Error: Installation failed after retry."
+ERR_RF=" Error: Retry failed. Please check your internet connection or the URL and try again."
+ERR_SE=" An error occurred. Exiting."
 ERR_UO=" Error: Unknown option."
-ERR_FWMLC=" Error: Failed to write module load configurations. Exiting."
-ERR_FWKP=" Error: Failed to write kernel parameters. Exiting."
+ERR_FWMLC=" Error: Failed to write module load configurations."
+ERR_FWKP=" Error: Failed to write kernel parameters."
 ERR_FFDGPGK=" Error: Failed to download docker GPG key. Please check your internet connection or the URL and try again."
-ERR_FADR=" Error: Failed to add Docker repository. Exiting."
-ERR_FRC=" Error: Failed to restart containerd. Exiting."
+ERR_FADR=" Error: Failed to add Docker repository."
+ERR_FRC=" Error: Failed to restart containerd."
 ERR_FFKKF=" Error: Failed to retrieve kubernetes release key file. Please check your internet connection or the URL and try again."
-ERR_FAKR=" Error: Failed to add Kubernetes repository. Exiting."
+ERR_FAKR=" Error: Failed to add Kubernetes repository."
 
 # Function: prints a help message.
 # Usage example:
@@ -91,6 +98,36 @@ display_usage() {
 EOF
 }
 
+# Function: prints message in green.
+# Usage example:
+# msg "some message"
+msg(){
+    local message="$1"
+    if [ -n "$message" ]; then
+        echo -e "${GREEN}$message${NC}" 
+    fi
+}
+
+# Function: prints error message in yellow.
+# Usage example:
+# wrn "some message"
+wrn(){
+    local message="$1"
+    if [ -n "$message" ]; then
+        echo -e "${YELLOW}$message${NC}" 
+    fi
+}
+
+# Function: prints error message in red.
+# Usage example:
+# oerr "some message"
+oerr(){
+    local message="$1"
+    if [ -n "$message" ]; then
+        echo -e "${RED}$message${NC}" 
+    fi
+}
+
 # Function: disable swap and backup fstab
 # Usage example:
 # disable_swap
@@ -108,7 +145,7 @@ disable_swap() {
 rollback_fstab() {
      if [ -f "/etc/fstab.backup" ]; then
         mv /etc/fstab.backup /etc/fstab
-        echo " Restored original fstab configuration."
+        msg " Restored original fstab configuration."
     fi
 }
 
@@ -117,12 +154,12 @@ rollback_fstab() {
 # trap execution_error ERR
 # execution_error "$ERR"
 execution_error() {
-    rollback_fstab;
-    local err_code=$1
-    if [ -z "$err_code" ]; then
-        echo "$err_code"
+    rollback_fstab
+    local err_code="$1"
+    if [ -n "$err_code" ]; then
+        oerr "$err_code"
     fi
-    echo "$ERR_SE";
+    oerr "$ERR_SE"
     exit 1
 }
 
@@ -131,8 +168,8 @@ execution_error() {
 # parameter_missing_error $ERR
 parameter_missing_error() {
     local err_message=$1
-    if [ -z "$err_message" ]; then
-        echo "$err_message"
+    if [ -n "$err_message" ]; then
+        wrn "$err_message"
     fi
     display_usage
     exit 1
@@ -143,12 +180,18 @@ parameter_missing_error() {
 # Usage example:
 # load_versions
 load_versions() {
+    msg " Loading CRDs versions."
     if ! CRDS_VERSIONS=$(curl -s $CRDS_RELEASES | grep -Eo $re_crds_ver | sed 's/release-//' | sort | uniq); then
         execution_error "$ERR_FFCRDVER"
     fi
-    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed 's/Kubernetes-//' | sort | uniq); then
+    msg " CRDs versions loaded:"
+    echo "$CRDS_VERSIONS"
+    msg " Loading Kubernetes versions."
+    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed 's/Kubernetes //' | sort | uniq); then
         execution_error "$ERR_FFKVER"
     fi
+    msg " Kubernetes versions loaded:"
+    echo "$K_VERSIONS"
 }
 
 # Function: validates the architecture input
@@ -181,12 +224,21 @@ validate_hostname() {
 # validate_ip_address "$IP"
 validate_ip_address() {
     local ip=$1
+    msg " Checking IP exists..."
     if [ -z "$ip" ]; then
         parameter_missing_error "$ERR_IPNS"
     fi
-    if ! [[ $ip =~ $re_ip ]]; then
+    msg " IP exists: $ip"
+    msg " Validating IP: $ip"
+    if ! echo "$ip" | grep -qE "$re_ip"; then
         execution_error "$ERR_IIP"
     fi
+    msg " IP: $ip - valid."
+    msg " Checking if reachable..."
+    if ! ping -c 1 "$ip" > /dev/null 2>&1; then
+        execution_error "$ERR_UNRIP"
+    fi
+    msg " IP $ip is valid and reachable."
 }
 
 # Function: checks if an port number is valid
@@ -197,7 +249,7 @@ validate_port() {
     if [ -z "$port" ]; then
         parameter_missing_error "$ERR_PRTNS"
     fi
-    if ! [[ $port =~ $re_port ]]; then
+    if ! echo "$port" | grep -qE "$re_port"; then
         execution_error "$ERR_IPRT"
     fi
 }
@@ -210,10 +262,14 @@ validate_token() {
     if [ -z "$token_file" ]; then
         parameter_missing_error "$ERR_TFNS"
     fi
-    if [ ! -f "$token_file" ]; then
+    token_file_path=$(eval echo "$token_file")
+    msg " Looking for the token file: $token_file_path"
+    if [ ! -f "$token_file_path" ]; then
         execution_error "$ERR_TFNE"
     fi
-    TOKEN=$(< "$token_file")
+    msg " Token file exists. Reading it."
+    TOKEN==$(cat "$token_file_path")
+    msg " Token file read."
 }
 
 # Function: validates the hash input
@@ -224,10 +280,14 @@ validate_hash() {
     if [ -z "$hash_file" ]; then
         parameter_missing_error "$ERR_HFNS"
     fi
-    if [ ! -f "$hash_file" ]; then
+    hash_file_path=$(eval echo "$hash_file")
+    msg " Looking for the hash file: $hash_file_path"
+    if [ ! -f "$hash_file_path" ]; then
         execution_error "$ERR_HFNE"
     fi
-    HASH=$(< "$hash_file")
+    msg " Hash file exists. Reading it."
+    HASH==$(cat "$hash_file_path")
+    msg " Hash file read."
 }
 
 # Function: Validate Kubernetes and CRDs versions against existing ones
@@ -313,9 +373,9 @@ execute_sensitive() {
 install_package() {
     local package=$1
     if ! apt-get install -y "$package"; then
-        echo " Installation failed for $package, attempting to fix broken dependencies..."
+        wrn " Installation failed for $package, attempting to fix broken dependencies..."
         execute apt-get --fix-broken install
-        echo " Retrying installation of $package..."
+        msg " Retrying installation of $package..."
         if ! apt-get install -y "$package"; then
             execution_error "$ERR_IRF"
         fi
@@ -329,10 +389,10 @@ download_and_apply() {
     local url=$1
     local file=$2
     if curl -fsSL "$url" -o "$file"; then
-        echo " $file downloaded successfully."
+        msg " $file downloaded successfully."
         execute kubectl apply -f "$file"
     else
-        echo "Error: Failed to download $file from $url. Retrying..."
+        wrn "Error: Failed to download $file from $url. Retrying..."
         execute sleep 5
         if ! curl -fsSL "$url" -o "$file"; then
             execution_error "$ERR_RF"
@@ -427,32 +487,32 @@ fi
 # START INSTALLING
 
 # update and upgrade the system (all nodes)
-echo " Updating the package lists from the configured repositories on the current system."
+msg " Updating the package lists from the configured repositories on the current system."
 execute apt-get update
-echo " Upgrading installed packages on the current system to their latest versions."
+msg " Upgrading installed packages on the current system to their latest versions."
 execute apt-get upgrade -y
 
 # enabling error handling with "automated recovery"
 trap execution_error ERR
 
 # disable swap - swap is bad for kubernetes (all nodes)
-echo " Backing up fstab and disabling swap."
-echo " Starting to disable swap..."
+msg " Backing up fstab and disabling swap."
+msg " Starting to disable swap..."
 disable_swap
-echo " Swap disabled successfully."
+msg " Swap disabled successfully."
 
 # add kernel modules to load on boot for containerd (all nodes)
-echo " Adding kernel modules for containerd to be loaded on boot up."
+msg " Adding kernel modules for containerd to be loaded on boot up."
 if ! echo "overlay
 br_netfilter" | tee /etc/modules-load.d/containerd.conf > /dev/null; then
     execution_error "$ERR_FWMLC"
 fi
-echo " Loading modules now."
+msg " Loading modules now."
 execute modprobe overlay
 execute modprobe br_netfilter
 
 # configure kernel parameters for networking and IP forwarding related to Kubernetes (all nodes)
-echo " Configuring system kernel parameters for networking and IP forwarding."
+msg " Configuring system kernel parameters for networking and IP forwarding."
 if ! echo "net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
@@ -460,11 +520,11 @@ net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
 fi
 
 # reload after 
-echo " Reloading."
+msg " Reloading."
 execute sysctl --system
 
 # make sure we have the needed packages installed with automated error recovery (all nodes)
-echo " Installing required packages."
+msg " Installing required packages."
 install_package curl
 install_package gnupg2
 install_package software-properties-common
@@ -473,108 +533,110 @@ install_package ca-certificates
 install_package gpg
 
 # retrieves the GPG key for Docker, processes it, and saves it in the appropriate location for package management (all nodes)
-echo " Downloading the docker GPG key."
+msg " Downloading the docker GPG key."
 if ! curl -fsSL $DOCKER_GPG_KEY | gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg; then
     execution_error "$ERR_FFDGPGK"
 fi
 # add the Docker repository to the system software sources
-echo " Adding the Docker repository to the system."
+msg " Adding the Docker repository to the system."
 if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
     execution_error "$ERR_FADR"
 fi
 
 # install containerd
-echo " Refreshing the package lists from the configured repositories on the system."
+msg " Refreshing the package lists from the configured repositories on the system."
 execute apt-get update
-echo " Installing Containerd package."
+msg " Installing Containerd package."
 install_package containerd.io
 # check how to install docker with their remote script if the previous method fails
 # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
-echo " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
+msg " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
 execute containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
-echo " Updating the default configuration for Containerd."
+msg " Updating the default configuration for Containerd."
 execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
 
 # Restarting containerd to apply new configurations
-echo " Restarting containerd to apply new configurations."
+msg " Restarting containerd to apply new configurations."
 execute systemctl restart containerd
 if ! systemctl is-active --quiet containerd; then
     execution_error "$ERR_FRC"
 fi
-echo " Containerd restarted and is active."
+msg " Containerd restarted and is active."
 
 # Ensuring containerd is enabled on boot
 if ! systemctl is-enabled --quiet containerd; then
-    echo " Enabling containerd to start on boot."
+    msg " Enabling containerd to start on boot."
     execute systemctl enable containerd
-    echo " Containerd enabled successfully."
+    msg " Containerd enabled successfully."
 else
-    echo " Containerd is already enabled on boot."
+    msg " Containerd is already enabled on boot."
 fi
 
 # add kubernetes repositories (all nodes)
-echo " Retrieving the release key file for kubernetes."
-if ! curl -fsSL $K_CORE:/stable:/$VERSION/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg; then
+msg " Retrieving the release key file for kubernetes."
+key_url="$K_CORE:/stable:/$VERSION/deb/Release.key"
+msg " Using url: $key_url"
+if ! curl -fsSL $key_url | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg; then
     execution_error "$ERR_FFKKF"
 fi
-echo " Adding the Kubernetes repository to the system."
+msg " Adding the Kubernetes repository to the system."
 if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] $K_CORE:/stable:/${VERSION}/deb/ /"; then
     execution_error "$ERR_FAKR"
 fi
 
 # refresh the package list
-echo " Refreshing the package lists with the new repositories."
+msg " Refreshing the package lists with the new repositories."
 execute apt-get update
 # install
-echo " Install Kubelet."
+msg " Install Kubelet."
 install_package kubelet
-echo " Install Kubeadm."
+msg " Install Kubeadm."
 install_package kubeadm
-echo " Install Kubectl."
+msg " Install Kubectl."
 install_package kubectl
-echo " Install Kubectx."
+msg " Install Kubectx."
 install_package kubectx
 #apt install -y kubelet kubeadm kubectl kubectx
-echo " Disabling auto-update for instaled packages."
+msg " Disabling auto-update for instaled packages."
 execute apt-mark hold kubelet kubeadm kubectl kubectx # disable auto update
 # set the hostname for each node
-echo " Setting the node hostname."
+msg " Setting the node hostname."
 execute hostnamectl set-hostname $HOSTNAME 
 # enable kubelet
-echo " Enabling Kubelet."
+msg " Enabling Kubelet."
 execute systemctl enable --now kubelet
 
 if [ -n "$MASTER_NODE" ]; then
     # initialize the cluster (MASTER ONLY)
-    echo " Initializing the Cluster."
+    msg " Initializing the Cluster."
     execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
     # throw in some crds plugins (MASTER ONLY)
-    echo " Installing Crds."
+    msg " Installing Crds."
     download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
 fi
 
 if [ -n "$WORKER_NODE" ]; then
     # join the cluster (WORKER ONLY)
     # starting the kubeadm in the MASTER NODE will generate the complete join command
-    echo " Joining Master Node."
+    msg " Joining Master Node."
     execute_sensitive kubeadm join $IP:$PORT --token $TOKEN --discovery-token-ca-cert-hash sha256:$HASH
 fi
 
 # configure the kubectl tool
 # Ensure the .kube directory exists
 if [ ! -d "$HOME/.kube" ]; then
-    echo " Creating .kube directory."
+    msg " Creating .kube directory."
     execute mkdir -p $HOME/.kube
 fi
 
 # Copy and set permissions for the configuration file
 if [ ! -f $HOME/.kube/config ]; then
-    echo " Creating Kubectl user configuration."
+    msg " Creating Kubectl user configuration."
     execute cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    echo " Setting configuration permissions."
+    msg " Setting configuration permissions."
     execute chown $(id -u):$(id -g) $HOME/.kube/config
     execute chmod 600 $HOME/.kube/config
-    echo " Permissions set to owner read/write only."
+    msg " Permissions set to owner read/write only."
 else
-    echo " Kubectl configuration already exists."
+    msg " Kubectl configuration already exists."
 fi
