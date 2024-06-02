@@ -87,6 +87,7 @@ ERR_FADR=" Error: Failed to add Docker repository."
 ERR_FRC=" Error: Failed to restart containerd."
 ERR_FFKKF=" Error: Failed to retrieve kubernetes release key file. Please check your internet connection or the URL and try again."
 ERR_FAKR=" Error: Failed to add Kubernetes repository."
+ERR_MNPC=" Error: Port is closed on Master Node."
 
 # Function: prints a help message.
 # Usage example:
@@ -244,11 +245,48 @@ validate_ip_address() {
         execution_error "$ERR_IIP"
     fi
     msg " IP: $ip - valid."
-    msg " Checking if reachable..."
+    ping_it "$ip"
+}
+
+# Function: checks if an IP address is reachable
+# Usage example:
+# ping_it "$ip"
+ping_it(){
+    local $address="$1"
+    msg " Checking if $address is reachable."
     if ! ping -c 1 "$ip" > /dev/null 2>&1; then
         execution_error "$ERR_UNRIP"
     fi
-    msg " IP $ip is valid and reachable."
+    msg " IP: $address - reachable."
+}
+
+poke_it(){
+    local this_port="$1"
+    # poke worker node port
+    if ss -tuln | grep -q ":$this_port"; then
+        wrn "Local port $this_port is in use."
+    fi
+    # poke master node port
+    if [ -n "$IP" ]; then
+        if nc -zv $IP $this_port 2>&1 | grep -q succeeded; then
+            msg "Port $this_port is open on $IP"
+        else
+            execution_error "$ERR_MNPC"
+        fi
+    fi
+}
+
+poke_defaults() {
+    # List of ports to check
+    DEFAULT_PORTS=(6443 2379 2380 10250 10251 10252 10255)
+
+    for port in "${DEFAULT_PORTS[@]}"; do
+        if ss -tuln | grep -q ":$port"; then
+            echo "Port $port is in use"
+        else
+            echo "Port $port is free"
+        fi
+    done
 }
 
 # Function: checks if an port number is valid
@@ -262,7 +300,7 @@ validate_port() {
     if ! echo "$port" | grep -qE "$re_port"; then
         execution_error "$ERR_IPRT"
     fi
-    msg " Opening port $port."
+    msg " Opening local port: $port."
     ufw allow $port/tcp
 }
 
@@ -586,6 +624,21 @@ upgrade_installed_packages() {
     execute apt-get upgrade -y
 }
 
+# Function: Add current node to a Master Node.
+# Starting the kubeadm in the MASTER NODE will generate the complete join command.
+# Usage example:
+# join_master
+join_master() {
+    msg " Joining Master Node."
+    ping_it "$IP" # ping IP
+    poke_it "$PORT" # check if port is free
+    # Clean variables (remove whitespace)
+    TOKEN=$(echo "$TOKEN" | xargs)
+    HASH=$(echo "$HASH" | xargs)
+    execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
+    msg " $HOSTNAME joined Master Node."
+}
+
 # Read parameters from command line
 read_parameters "$@"
 
@@ -714,13 +767,7 @@ fi
 
 if [ -n "$WORKER_NODE" ]; then
     # join the cluster (WORKER ONLY)
-    # starting the kubeadm in the MASTER NODE will generate the complete join command
-    msg " Joining Master Node."
-    # Clean variables (remove whitespace)
-    TOKEN=$(echo "$TOKEN" | xargs)
-    HASH=$(echo "$HASH" | xargs)
-    execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
-    msg " Master has a new worker: $HOSTNAME"
+    join_master
 fi
 
 # configure the kubectl tool
