@@ -262,6 +262,8 @@ validate_port() {
     if ! echo "$port" | grep -qE "$re_port"; then
         execution_error "$ERR_IPRT"
     fi
+    msg " Opening port $port."
+    ufw allow $port/tcp
 }
 
 # Function: validates the token input
@@ -278,7 +280,7 @@ validate_token() {
         execution_error "$ERR_TFNE"
     fi
     msg " Token file exists. Reading it."
-    TOKEN==$(cat "$token_file_path")
+    TOKEN=$(cat "$token_file_path")
     msg " Token file read."
 }
 
@@ -296,7 +298,7 @@ validate_hash() {
         execution_error "$ERR_HFNE"
     fi
     msg " Hash file exists. Reading it."
-    HASH==$(cat "$hash_file_path")
+    HASH=$(cat "$hash_file_path")
     msg " Hash file read."
 }
 
@@ -698,6 +700,8 @@ execute hostnamectl set-hostname $HOSTNAME
 # enable kubelet
 msg " Enabling Kubelet."
 execute systemctl enable --now kubelet
+# disable swap rollback from now on
+execute rm "/etc/fstab.backup"
 
 if [ -n "$MASTER_NODE" ]; then
     # initialize the cluster (MASTER ONLY)
