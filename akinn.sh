@@ -32,19 +32,28 @@ IP=$(ip addr show $(ip route | grep default | awk '{print $5}') | grep -oP $re_o
 PORT="6443" # Worker node needs the master's port number.
 TOKEN="" # Worker node needs a token to join master. 
 HASH="" # Worker node needs a hash to join master. 
-ARCH="amd64" # Architecture
+ARCH="$(dpkg --print-architecture)" # Architecture
 
 # Variables
 K_VERSIONS="" # Kubernetes versions
 CRDS_VERSIONS="" # Kubernetes Custom Resources Definitions versions
 
 # Configuration constants
+DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
+DOCKER_GPG_URL="https://download.docker.com/linux/ubuntu/gpg" # Docker GPG key url
+DOCKER_GPG_TMP="/tmp/docker.gpg"
+DOCKER_GPG_BKP="/tmp/bkp.docker.gpg"
+DOCKER_GPG="/etc/apt/trusted.gpg.d/docker.gpg"
+
 K_RELEASES="https://github.com/kubernetes/kubernetes/releases" # Kubernetes releases
-K_CORE="https://pkgs.k8s.io/core" # Kubernetes core
+K_CORE="https://pkgs.k8s.io/core" # Kubernetes core packages
+K_REPO="$K_CORE:/stable:/${VERSION}/deb/"
+K_GPG_TMP="/tmp/kubernetes.gpg"
+K_GPG_BKP=/tmp/bkp.kubernetes.gpg
+K_GPG="/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
 CRDS_REPO="https://raw.githubusercontent.com/projectcalico/calico" # Kubernetes Custom Resources Definitions repository
-DOCKER_GPG_KEY="https://download.docker.com/linux/ubuntu/gpg" # Docker GPG key
-DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
 
 # ERROR MESSAGES
 ERR_FFCRDVER=" Error: Failed to fetch Custom Resources Definitions versions."
@@ -451,6 +460,117 @@ read_parameters() {
   done
 }
 
+# Function: Download and install Docker GPG key avoiding user interaction
+# Usage example:
+# install_docker_gpg_key
+install_docker_gpg_key() {
+    msg " Preparing to download Docker GPG key."
+
+    if [ -f "$DOCKER_GPG" ]; then
+        msg " Backing up current Docker GPG key."
+        if ! cp "$DOCKER_GPG" "$DOCKER_GPG_BKP"; then
+            wrn " Failed to backup current Docker GPG key."
+        else
+            msg " Current Docker GPG key backed up."
+        fi
+    fi
+
+    msg " Downloading the Docker GPG key."
+    if ! curl -fsSL "$DOCKER_GPG_URL" | gpg --dearmour -o "$DOCKER_GPG_TMP"; then
+        wrn "Clearing backup file."
+        rm -f "$DOCKER_GPG_BKP"
+        wrn "Backup file cleared."
+        execution_error "$ERR_FFDGPGK"
+    fi
+
+    msg "Docker GPG key downloaded."
+    msg "Updating Docker GPG key from temporary file."
+    if mv "$DOCKER_GPG_TMP" "$DOCKER_GPG"; then
+        msg "Docker GPG key updated."
+    else
+        execution_error "Failed to update Docker GPG key."
+    fi
+}
+
+# Function: Add Docker repository
+add_docker_repository() {
+    msg "Adding the Docker repository to the system."
+    if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
+        execution_error "$ERR_FADR"
+    fi
+}
+
+install_containerd(){
+    msg " Installing Containerd package."
+    install_package containerd.io
+    # check how to install docker with their remote script if the previous method fails
+    # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
+    msg " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
+    execute containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
+    msg " Updating the default configuration for Containerd."
+    execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+
+    # Restarting containerd to apply new configurations
+    msg " Restarting containerd to apply new configurations."
+    execute systemctl restart containerd
+    if ! systemctl is-active --quiet containerd; then
+        execution_error "$ERR_FRC"
+    fi
+    msg " Containerd restarted and is active."
+
+    # Ensuring containerd is enabled on boot
+    if ! systemctl is-enabled --quiet containerd; then
+        msg " Enabling containerd to start on boot."
+        execute systemctl enable containerd
+        msg " Containerd enabled successfully."
+    else
+        msg " Containerd is already enabled on boot."
+    fi
+}
+
+# Function: Download and install Kubernetes GPG key avoiding user interaction
+# Usage example:
+# install_kubernetes_gpg_key
+install_kubernetes_gpg_key(){
+    msg " Preparing to download Kubernetes GPG key."
+    K_GPG_URL="$K_CORE:/stable:/$VERSION/deb/Release.key"
+
+    if [ -f "$K_GPG" ]; then
+        msg " Backing up current Kubernetes GPG key."
+        if ! cp "$K_GPG" "$K_GPG_BKP"; then
+            wrn " Failed to backup current Kubernetes GPG key."
+        else
+            msg " Current Kubernetes GPG key backed up."
+        fi
+    fi
+
+    msg " Downloading the Kubernetes GPG key."
+    msg " Using url: $K_GPG_URL"
+    if ! curl -fsSL $K_GPG_URL | gpg --dearmor -o $K_GPG_TMP; then
+        wrn " Clearing backup file."
+        rm -f "$K_GPG_BKP"
+        wrn " Backup file cleared."
+        execution_error "$ERR_FFKKF"
+    fi
+
+    msg "Kubernetes GPG key downloaded."
+    msg "Updating Kubernetes GPG key from temporary file."
+    if mv "$K_GPG_TMP" "$K_GPG"; then
+        msg "Kubernetes GPG key updated."
+    else
+        execution_error "Failed to update Kubernetes GPG key."
+    fi
+}
+
+# Function: Add Kubernetes repository
+add_kubernetes_repository(){
+    msg " Adding the Kubernetes repository to the system."
+    K_REPO="$K_CORE:/stable:/$VERSION/deb/"
+    if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] $K_REPO /"; then
+        execution_error "$ERR_FAKR"
+    fi
+}
+
 # Read parameters from command line
 read_parameters "$@"
 
@@ -533,56 +653,21 @@ install_package ca-certificates
 install_package gpg
 
 # retrieves the GPG key for Docker, processes it, and saves it in the appropriate location for package management (all nodes)
-msg " Downloading the docker GPG key."
-if ! curl -fsSL $DOCKER_GPG_KEY | gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg; then
-    execution_error "$ERR_FFDGPGK"
-fi
+install_docker_gpg_key
 # add the Docker repository to the system software sources
-msg " Adding the Docker repository to the system."
-if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
-    execution_error "$ERR_FADR"
-fi
+add_docker_repository
 
-# install containerd
 msg " Refreshing the package lists from the configured repositories on the system."
 execute apt-get update
-msg " Installing Containerd package."
-install_package containerd.io
-# check how to install docker with their remote script if the previous method fails
-# configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
-msg " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
-execute containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
-msg " Updating the default configuration for Containerd."
-execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
 
-# Restarting containerd to apply new configurations
-msg " Restarting containerd to apply new configurations."
-execute systemctl restart containerd
-if ! systemctl is-active --quiet containerd; then
-    execution_error "$ERR_FRC"
-fi
-msg " Containerd restarted and is active."
+# install containerd
+install_containerd
 
-# Ensuring containerd is enabled on boot
-if ! systemctl is-enabled --quiet containerd; then
-    msg " Enabling containerd to start on boot."
-    execute systemctl enable containerd
-    msg " Containerd enabled successfully."
-else
-    msg " Containerd is already enabled on boot."
-fi
+# retrieves the GPG key for Kubernetes, processes it, and saves it in the appropriate location for package management (all nodes)
+install_kubernetes_gpg_key
 
-# add kubernetes repositories (all nodes)
-msg " Retrieving the release key file for kubernetes."
-key_url="$K_CORE:/stable:/$VERSION/deb/Release.key"
-msg " Using url: $key_url"
-if ! curl -fsSL $key_url | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg; then
-    execution_error "$ERR_FFKKF"
-fi
-msg " Adding the Kubernetes repository to the system."
-if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] $K_CORE:/stable:/${VERSION}/deb/ /"; then
-    execution_error "$ERR_FAKR"
-fi
+# add kubernetes repository (all nodes)
+add_kubernetes_repository
 
 # refresh the package list
 msg " Refreshing the package lists with the new repositories."
