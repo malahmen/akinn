@@ -478,28 +478,28 @@ install_docker_gpg_key() {
 
     msg " Downloading the Docker GPG key."
     if ! curl -fsSL "$DOCKER_GPG_URL" | gpg --dearmour -o "$DOCKER_GPG_TMP"; then
-        wrn "Clearing backup file."
+        wrn " Clearing backup file."
         rm -f "$DOCKER_GPG_BKP"
-        wrn "Backup file cleared."
+        wrn " Backup file cleared."
         execution_error "$ERR_FFDGPGK"
     fi
 
-    msg "Docker GPG key downloaded."
-    msg "Updating Docker GPG key from temporary file."
+    msg " Docker GPG key downloaded."
+    msg " Updating Docker GPG key from temporary file."
     if mv "$DOCKER_GPG_TMP" "$DOCKER_GPG"; then
-        msg "Docker GPG key updated."
+        msg " Docker GPG key updated."
     else
-        execution_error "Failed to update Docker GPG key."
+        execution_error " Failed to update Docker GPG key."
     fi
 }
 
 # Function: Add Docker repository
 add_docker_repository() {
-    msg "Adding the Docker repository to the system."
-    if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
+    msg " Adding the Docker repository to the system."
+    if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable" -y; then
         execution_error "$ERR_FADR"
     fi
-    msg "Docker repository added."
+    msg " Docker repository added."
 }
 
 install_containerd(){
@@ -555,12 +555,12 @@ install_kubernetes_gpg_key(){
         execution_error "$ERR_FFKKF"
     fi
 
-    msg "Kubernetes GPG key downloaded."
-    msg "Updating Kubernetes GPG key from temporary file."
+    msg " Kubernetes GPG key downloaded."
+    msg " Updating Kubernetes GPG key from temporary file."
     if mv "$K_GPG_TMP" "$K_GPG"; then
-        msg "Kubernetes GPG key updated."
+        msg " Kubernetes GPG key updated."
     else
-        execution_error "Failed to update Kubernetes GPG key."
+        execution_error " Failed to update Kubernetes GPG key."
     fi
 }
 
@@ -571,7 +571,7 @@ add_kubernetes_repository() {
     if [ $? -ne 0 ]; then
         execution_error "$ERR_FAKR"
     fi
-    msg "Kubernetes repository added."
+    msg " Kubernetes repository added."
 }
 
 refresh_packages_list() {
@@ -712,7 +712,7 @@ if [ -n "$WORKER_NODE" ]; then
     # join the cluster (WORKER ONLY)
     # starting the kubeadm in the MASTER NODE will generate the complete join command
     msg " Joining Master Node."
-    execute_sensitive kubeadm join $IP:$PORT --token $TOKEN --discovery-token-ca-cert-hash sha256:$HASH
+    execute_sensitive "kubeadm join $IP:$PORT --token $TOKEN --discovery-token-ca-cert-hash sha256:$HASH"
 fi
 
 # configure the kubectl tool
