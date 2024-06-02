@@ -712,7 +712,11 @@ if [ -n "$WORKER_NODE" ]; then
     # join the cluster (WORKER ONLY)
     # starting the kubeadm in the MASTER NODE will generate the complete join command
     msg " Joining Master Node."
-    execute_sensitive "kubeadm join $IP:$PORT --token $TOKEN --discovery-token-ca-cert-hash sha256:$HASH"
+    # Clean variables (remove whitespace)
+    TOKEN=$(echo "$TOKEN" | xargs)
+    HASH=$(echo "$HASH" | xargs)
+    execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
+    msg " Master has a new worker: $HOSTNAME"
 fi
 
 # configure the kubectl tool
