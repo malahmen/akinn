@@ -254,7 +254,7 @@ validate_ip_address() {
 ping_it() {
     local address="$1"
     msg " Checking if $address is reachable."
-    if ! ping -c 1 "$ip" > /dev/null 2>&1; then
+    if ! ping -c 1 "$address" > /dev/null 2>&1; then
         execution_error "$ERR_UNRIP"
     fi
     msg " IP: $address - reachable."
