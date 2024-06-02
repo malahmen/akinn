@@ -264,30 +264,30 @@ poke_it() {
     local this_port="$1"
     # poke worker node port
     if ss -tuln | grep -q ":$this_port"; then
-        wrn "Local port $this_port is in use."
+        wrn " Local port $this_port is in use."
     fi
     # poke master node port
     if [ -n "$IP" ]; then
         if nc -zv $IP $this_port 2>&1 | grep -q succeeded; then
-            msg "Port $this_port is open on $IP"
+            msg " Port $this_port is open on $IP"
         else
             execution_error "$ERR_MNPC"
         fi
     fi
 }
 
-poke_defaults() {
-    # List of ports to check
-    DEFAULT_PORTS=(6443 2379 2380 10250 10251 10252 10255)
+#poke_defaults() {
+#    # List of ports to check
+#    DEFAULT_PORTS=(6443 2379 2380 10250 10251 10252 10255)
 
-    for port in "${DEFAULT_PORTS[@]}"; do
-        if ss -tuln | grep -q ":$port"; then
-            echo "Port $port is in use"
-        else
-            echo "Port $port is free"
-        fi
-    done
-}
+#    for port in "${DEFAULT_PORTS[@]}"; do
+#        if ss -tuln | grep -q ":$port"; then
+#            echo " Port $port is in use"
+#        else
+#            echo " Port $port is free"
+#        fi
+#    done
+#}
 
 # Function: checks if an port number is valid
 # Usage example:
