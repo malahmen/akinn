@@ -251,8 +251,8 @@ validate_ip_address() {
 # Function: checks if an IP address is reachable
 # Usage example:
 # ping_it "$ip"
-ping_it(){
-    local $address="$1"
+ping_it() {
+    local address="$1"
     msg " Checking if $address is reachable."
     if ! ping -c 1 "$ip" > /dev/null 2>&1; then
         execution_error "$ERR_UNRIP"
@@ -260,7 +260,7 @@ ping_it(){
     msg " IP: $address - reachable."
 }
 
-poke_it(){
+poke_it() {
     local this_port="$1"
     # poke worker node port
     if ss -tuln | grep -q ":$this_port"; then
