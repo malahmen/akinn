@@ -48,6 +48,7 @@ DOCKER_GPG="/etc/apt/trusted.gpg.d/docker.gpg"
 K_RELEASES="https://github.com/kubernetes/kubernetes/releases" # Kubernetes releases
 K_CORE="https://pkgs.k8s.io/core" # Kubernetes core packages
 K_REPO="$K_CORE:/stable:/${VERSION}/deb/"
+K_LIST="/etc/apt/sources.list.d/kubernetes.list"
 K_GPG_TMP="/tmp/kubernetes.gpg"
 K_GPG_BKP=/tmp/bkp.kubernetes.gpg
 K_GPG="/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
@@ -113,7 +114,7 @@ EOF
 msg(){
     local message="$1"
     if [ -n "$message" ]; then
-        echo -e "${GREEN}$message${NC}" 
+        printf "${GREEN}$message${NC}\n" 
     fi
 }
 
@@ -123,7 +124,7 @@ msg(){
 wrn(){
     local message="$1"
     if [ -n "$message" ]; then
-        echo -e "${YELLOW}$message${NC}" 
+        printf "${YELLOW}$message${NC}\n" 
     fi
 }
 
@@ -133,7 +134,7 @@ wrn(){
 oerr(){
     local message="$1"
     if [ -n "$message" ]; then
-        echo -e "${RED}$message${NC}" 
+        printf "${RED}$message${NC}\n" 
     fi
 }
 
@@ -498,6 +499,7 @@ add_docker_repository() {
     if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable"; then
         execution_error "$ERR_FADR"
     fi
+    msg "Docker repository added."
 }
 
 install_containerd(){
@@ -563,12 +565,23 @@ install_kubernetes_gpg_key(){
 }
 
 # Function: Add Kubernetes repository
-add_kubernetes_repository(){
+add_kubernetes_repository() {
     msg " Adding the Kubernetes repository to the system."
-    K_REPO="$K_CORE:/stable:/$VERSION/deb/"
-    if ! add-apt-repository "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] $K_REPO /"; then
+    echo "deb [signed-by=$K_GPG] $K_REPO /" | tee $K_LIST > /dev/null
+    if [ $? -ne 0 ]; then
         execution_error "$ERR_FAKR"
     fi
+    msg "Kubernetes repository added."
+}
+
+refresh_packages_list() {
+    msg " Refreshing the package lists."
+    execute apt-get update
+}
+
+upgrade_installed_packages() {
+    msg " Upgrading installed packages to their latest versions."
+    execute apt-get upgrade -y
 }
 
 # Read parameters from command line
@@ -607,10 +620,8 @@ fi
 # START INSTALLING
 
 # update and upgrade the system (all nodes)
-msg " Updating the package lists from the configured repositories on the current system."
-execute apt-get update
-msg " Upgrading installed packages on the current system to their latest versions."
-execute apt-get upgrade -y
+refresh_packages_list
+upgrade_installed_packages
 
 # enabling error handling with "automated recovery"
 trap execution_error ERR
@@ -657,21 +668,18 @@ install_docker_gpg_key
 # add the Docker repository to the system software sources
 add_docker_repository
 
-msg " Refreshing the package lists from the configured repositories on the system."
-execute apt-get update
+refresh_packages_list
 
 # install containerd
 install_containerd
 
 # retrieves the GPG key for Kubernetes, processes it, and saves it in the appropriate location for package management (all nodes)
 install_kubernetes_gpg_key
-
 # add kubernetes repository (all nodes)
 add_kubernetes_repository
 
-# refresh the package list
-msg " Refreshing the package lists with the new repositories."
-execute apt-get update
+refresh_packages_list
+
 # install
 msg " Install Kubelet."
 install_package kubelet
@@ -681,7 +689,7 @@ msg " Install Kubectl."
 install_package kubectl
 msg " Install Kubectx."
 install_package kubectx
-#apt install -y kubelet kubeadm kubectl kubectx
+
 msg " Disabling auto-update for instaled packages."
 execute apt-mark hold kubelet kubeadm kubectl kubectx # disable auto update
 # set the hostname for each node
