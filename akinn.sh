@@ -7,13 +7,17 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 echo " Automated Kubernetes Installation for New Nodes - without user interaction."
 
-. regex.sh # load regular expressions for validation.
-. colours.sh # load terminal colours.
-. parameters.sh # load parameters default values.
-. consts.sh # loads configuration constants.
-. vars.sh # loads used variables. requires consts and parameters.
-. error_messages.sh # load error messages.
-. functions.sh # load functions.
+# Get the current directory of this script.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Loads the external files in the same directory
+. "$SCRIPT_DIR/regex.sh" # loads regular expressions for validation.
+. "$SCRIPT_DIR/colors.sh" # loads terminal colors.
+. "$SCRIPT_DIR/parameters.sh" # loads parameters default values.
+. "$SCRIPT_DIR/constants.sh" # loads configuration constants.
+. "$SCRIPT_DIR/variables.sh" # loads used variables. requires constants and parameters.
+. "$SCRIPT_DIR/errors.sh" # loads the error messages.
+. "$SCRIPT_DIR/functions.sh" # loads the functions used.
 
 # Read parameters from command line
 read_parameters "$@"
