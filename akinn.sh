@@ -1,11 +1,11 @@
 #!/bin/sh
 
-echo " Automated Kubernetes Installation for New Nodes - without user interaction."
 if [ "$(id -u)" -ne 0 ]; then
     echo " Must be run as root. Trying with sudo..."
     exec sudo HOME="$HOME" "$0" "$@"
     exit 1
 fi
+echo " Automated Kubernetes Installation for New Nodes - without user interaction."
 
 # Regular expressions for validations
 re_ip='^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$' # Regex: checks if the input is a valid IPv4 address.
@@ -42,15 +42,21 @@ CRDS_VERSIONS="" # Kubernetes Custom Resources Definitions versions
 DOCKER_REPO="https://download.docker.com/linux/ubuntu" # Docker repository
 DOCKER_GPG_URL="https://download.docker.com/linux/ubuntu/gpg" # Docker GPG key url
 DOCKER_GPG_TMP="/tmp/docker.gpg"
-DOCKER_GPG_BKP="/tmp/bkp.docker.gpg"
+DOCKER_GPG_BKP="/tmp/backup.docker.gpg"
 DOCKER_GPG="/etc/apt/trusted.gpg.d/docker.gpg"
+
+# FILES
+FSTABF="/etc/fstab"
+FSTABFB="/tmp/backup.fstab" 
+CCF="/etc/containerd/config.toml"
+CCFB="/tmp/backup.config.toml"
 
 K_RELEASES="https://github.com/kubernetes/kubernetes/releases" # Kubernetes releases
 K_CORE="https://pkgs.k8s.io/core" # Kubernetes core packages
 K_REPO="$K_CORE:/stable:/${VERSION}/deb/"
 K_LIST="/etc/apt/sources.list.d/kubernetes.list"
 K_GPG_TMP="/tmp/kubernetes.gpg"
-K_GPG_BKP=/tmp/bkp.kubernetes.gpg
+K_GPG_BKP=/tmp/backup.kubernetes.gpg
 K_GPG="/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
 
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
@@ -139,25 +145,83 @@ oerr(){
     fi
 }
 
+# Function: creates backup file from origin file.
+# Usage example:
+# backup_file "$origin" "$destiny"
+backup_file() {
+    local origin="$1"
+    local destiny="$2"
+    if [ -f "$origin" ]; then
+        msg " $origin exists, backing up."
+        if ! cp "$origin" "$destiny"; then
+            wrn " failed to backup $origin."
+        else
+            msg " $origin backed up."
+        fi
+    else 
+        wrn " $origin not found, nothing to backup."
+    fi
+}
+
+# Function: updates origin file with backup file.
+# Backup file is deleted on success.
+# Usage example:
+# revert_to_backup "$backup" "$origin"
+revert_to_backup() {
+    local backup="$1"
+    local origin="$2"
+    if [ -f "$backup" ]; then
+        msg " $backup exists, reverting."
+        if ! mv "$backup" "$origin"; then
+            wrn " failed to revert $origin."
+        else
+            msg " $origin reverted."
+        fi
+    else
+        wrn " $backup not found, nothing to revert."
+    fi
+}
+
+# Function: updates destiny file with source file.
+# Source file is deleted on success.
+# Breaks execution on failure.
+# Usage example:
+# update_file "$source" "$destiny"
+update_file() {
+    local source="$1"
+    local destiny="$2"
+    if [ -f "$source" ]; then
+        msg " $source exists, updating $destiny."
+        if ! mv "$source" "$destiny"; then
+            oerr " failed to update $destiny."
+            exit 1
+        else
+            msg " $destiny updated."
+        fi
+    else
+        oerr " $source not found, failed to update."
+        exit 1
+    fi
+}
+
 # Function: disable swap and backup fstab
 # Usage example:
 # disable_swap
 disable_swap() {
-    if [ -f "/etc/fstab" ]; then
-        cp /etc/fstab /etc/fstab.backup
-    fi
+    backup_file "$FSTABF" "$FSTABFB"
     swapoff -a
     sed -i '/ swap / s/^/#/' /etc/fstab
 }
 
-# Function: rollback fstab changes
+# Function: rollback file changes
 # Usage example:
-# rollback_fstab
-rollback_fstab() {
-     if [ -f "/etc/fstab.backup" ]; then
-        mv /etc/fstab.backup /etc/fstab
-        msg " Restored original fstab configuration."
-    fi
+# rollback_files
+rollback_files(){
+    revert_to_backup "$FSTABFB" "$FSTABF" # rollback fstab file
+    revert_to_backup "$DOCKER_GPG_BKP" "$DOCKER_GPG" # rollback Docker GPG key
+    revert_to_backup "$K_GPG_BKP" "$K_GPG" # rollback kubernetes GPG key
+    revert_to_backup "$CCFB" "$CCF" # rollback containerd configuration
+    rm -rf $HOME/.kube # clear kubectl configuration files
 }
 
 # Function: exits with message.
@@ -165,7 +229,7 @@ rollback_fstab() {
 # trap execution_error ERR
 # execution_error "$ERR"
 execution_error() {
-    rollback_fstab
+    rollback_files
     local err_code="$1"
     if [ -n "$err_code" ]; then
         oerr "$err_code"
@@ -230,7 +294,7 @@ validate_hostname() {
     fi
 }
 
-# Function: checks if an IP address is valid
+# Function: checks if an IP address is valid.
 # Usage example:
 # validate_ip_address "$IP"
 validate_ip_address() {
@@ -248,7 +312,7 @@ validate_ip_address() {
     ping_it "$ip"
 }
 
-# Function: checks if an IP address is reachable
+# Function: checks if an IP address is reachable.
 # Usage example:
 # ping_it "$ip"
 ping_it() {
@@ -260,11 +324,19 @@ ping_it() {
     msg " IP: $address - reachable."
 }
 
+# Function: checks if a port in a IP address is free.
+# Also checks the local machine port.
+# Usage example:
+# poke_it "$port"
 poke_it() {
     local this_port="$1"
     # poke worker node port
     if ss -tuln | grep -q ":$this_port"; then
         wrn " Local port $this_port is in use."
+    else
+        msg " Local port $this_port is free."
+        #msg " Opening local port: $port."
+        #ufw allow $port/tcp
     fi
     # poke master node port
     if [ -n "$IP" ]; then
@@ -276,20 +348,19 @@ poke_it() {
     fi
 }
 
-#poke_defaults() {
-#    # List of ports to check
-#    DEFAULT_PORTS=(6443 2379 2380 10250 10251 10252 10255)
+# Function: checks common ports are free.
+# Also checks the master node if IP is present.
+# Usage example:
+# poke_defaults
+poke_defaults() {
+    # List of usual ports to check
+    DEFAULT_PORTS="6443 2379 2380 10250 10251 10252 10255"
+    for port in $DEFAULT_PORTS; do
+        poke_it "$port"
+    done
+}
 
-#    for port in "${DEFAULT_PORTS[@]}"; do
-#        if ss -tuln | grep -q ":$port"; then
-#            echo " Port $port is in use"
-#        else
-#            echo " Port $port is free"
-#        fi
-#    done
-#}
-
-# Function: checks if an port number is valid
+# Function: checks if an port number is valid.
 # Usage example:
 # validate_port "$PORT"
 validate_port() {
@@ -300,11 +371,10 @@ validate_port() {
     if ! echo "$port" | grep -qE "$re_port"; then
         execution_error "$ERR_IPRT"
     fi
-    msg " Opening local port: $port."
-    ufw allow $port/tcp
 }
 
-# Function: validates the token input
+# Function: validates the token input.
+# Also reads the token value from its file.
 # Usage example:
 # validate_token "$TOKEN"
 validate_token() {
@@ -322,7 +392,8 @@ validate_token() {
     msg " Token file read."
 }
 
-# Function: validates the hash input
+# Function: validates the hash input.
+# Also reads the hash value from its file.
 # Usage example:
 # validate_hash "$HASH"
 validate_hash() {
@@ -340,7 +411,7 @@ validate_hash() {
     msg " Hash file read."
 }
 
-# Function: Validate Kubernetes and CRDs versions against existing ones
+# Function: Validate Kubernetes and CRDs versions against existing ones.
 # Usage example:
 # validate_version "$VERSION" "kubernetes"
 # validate_version "$CRDS" "crds"
@@ -358,7 +429,7 @@ validate_version() {
     fi
 }
 
-# Function: Validate Kubernetes version input
+# Function: Validate Kubernetes version input.
 # Usage example:
 # validate_kubernetes_version "$VERSION"
 validate_kubernetes_version() {
@@ -369,7 +440,7 @@ validate_kubernetes_version() {
     validate_version "$version" "kubernetes"
 }
 
-# Function: Validate Kubernetes crds version input
+# Function: Validate Kubernetes crds version input.
 # Usage example:
 # validate_crds_version "$CRDS"
 validate_crds_version() {
@@ -380,7 +451,7 @@ validate_crds_version() {
     validate_version "$version" "crds"
 }
 
-# Function: Validate CIDR block
+# Function: Validate CIDR block.
 # Usage example:
 # validate_cidr_block "$CIDR"
 validate_cidr_block() {
@@ -393,7 +464,7 @@ validate_cidr_block() {
     fi
 }
 
-# Function: execute commands with enhanced error handling
+# Function: execute commands with enhanced error handling.
 # Usage example:
 # execute apt update
 # execute apt install -y kubelet kubeadm kubectl kubectx
@@ -405,7 +476,7 @@ execute() {
     fi
 }
 
-# Function: execute commands with error handling (no vars printed)
+# Function: execute commands with error handling (no vars printed).
 # Usage example:
 # execute_sensitive apt update
 # execute_sensitive apt install -y kubelet kubeadm kubectl kubectx
@@ -417,22 +488,40 @@ execute_sensitive() {
     fi
 }
 
-# Function: package installation with automated error recovery
+# Function: detects if package is installed.
+# returns 0 if installed
+# returns 1 if not installed
+# Usage example:
+# if ! is_package_installed $package; then [..]
+is_package_installed() {
+    PACKAGE_NAME=$1
+    if dpkg-query -W -f='${Status}' "$PACKAGE_NAME" 2>/dev/null | grep -Eq "^(install|hold) ok installed$"; then
+        wrn " Package $PACKAGE_NAME is already installed."
+        return 0 # true in shell scripts
+    else
+        wrn " Package $PACKAGE_NAME is not yet installed."
+        return 1 # false (anything above zero is) in shell scripts
+    fi
+}
+
+# Function: package installation with automated error recovery.
 # Usage example:
 # install_package containerd.io
 install_package() {
     local package=$1
-    if ! apt-get install -y "$package"; then
-        wrn " Installation failed for $package, attempting to fix broken dependencies..."
-        execute apt-get --fix-broken install
-        msg " Retrying installation of $package..."
+    if ! is_package_installed $package; then
         if ! apt-get install -y "$package"; then
-            execution_error "$ERR_IRF"
+            wrn " Installation failed for $package, attempting to fix broken dependencies..."
+            execute apt-get --fix-broken install
+            msg " Retrying installation of $package..."
+            if ! apt-get install -y "$package"; then
+                execution_error "$ERR_IRF"
+            fi
         fi
     fi
 }
 
-# Function: download and apply from external sources with validation
+# Function: download and apply from external sources with validation.
 # Usage example:
 # download_and_apply "https://raw.githubusercontent.com/projectcalico/calico/$CRDS/manifests/calico.yaml" "calico.yaml"
 download_and_apply() {
@@ -440,7 +529,6 @@ download_and_apply() {
     local file=$2
     if curl -fsSL "$url" -o "$file"; then
         msg " $file downloaded successfully."
-        execute kubectl apply -f "$file"
     else
         wrn "Error: Failed to download $file from $url. Retrying..."
         execute sleep 5
@@ -448,9 +536,10 @@ download_and_apply() {
             execution_error "$ERR_RF"
         fi
     fi
+    execute kubectl apply -f "$file"
 }
 
-# Function: read parameters from command line
+# Function: read parameters from command line.
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
@@ -501,39 +590,25 @@ read_parameters() {
   done
 }
 
-# Function: Download and install Docker GPG key avoiding user interaction
+# Function: Download and install Docker GPG key avoiding user interaction.
 # Usage example:
 # install_docker_gpg_key
 install_docker_gpg_key() {
-    msg " Preparing to download Docker GPG key."
-
-    if [ -f "$DOCKER_GPG" ]; then
-        msg " Backing up current Docker GPG key."
-        if ! cp "$DOCKER_GPG" "$DOCKER_GPG_BKP"; then
-            wrn " Failed to backup current Docker GPG key."
-        else
-            msg " Current Docker GPG key backed up."
-        fi
-    fi
+    msg " Backing up Docker GPG key."
+    backup_file "$DOCKER_GPG" "$DOCKER_GPG_BKP"
 
     msg " Downloading the Docker GPG key."
     if ! curl -fsSL "$DOCKER_GPG_URL" | gpg --dearmour -o "$DOCKER_GPG_TMP"; then
-        wrn " Clearing backup file."
-        rm -f "$DOCKER_GPG_BKP"
-        wrn " Backup file cleared."
         execution_error "$ERR_FFDGPGK"
     fi
-
     msg " Docker GPG key downloaded."
-    msg " Updating Docker GPG key from temporary file."
-    if mv "$DOCKER_GPG_TMP" "$DOCKER_GPG"; then
-        msg " Docker GPG key updated."
-    else
-        execution_error " Failed to update Docker GPG key."
-    fi
+
+    msg " Updating Docker GPG key."
+    update_file "$DOCKER_GPG_TMP" "$DOCKER_GPG"
+    msg " Docker GPG key updated."
 }
 
-# Function: Add Docker repository
+# Function: Add Docker repository.
 add_docker_repository() {
     msg " Adding the Docker repository to the system."
     if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable" -y; then
@@ -542,15 +617,19 @@ add_docker_repository() {
     msg " Docker repository added."
 }
 
-install_containerd(){
+install_containerd() {
+    # check how to install docker with their remote script if the previous method fails
     msg " Installing Containerd package."
     install_package containerd.io
-    # check how to install docker with their remote script if the previous method fails
+
+    msg " Backing up Containerd configuration."
+    backup_file "$CCF" "$CCFB"
+
     # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
     msg " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
-    execute containerd config default | tee /etc/containerd/config.toml >/dev/null 2>&1
+    execute containerd config default | tee $CCF >/dev/null 2>&1
     msg " Updating the default configuration for Containerd."
-    execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+    execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' $CCF
 
     # Restarting containerd to apply new configurations
     msg " Restarting containerd to apply new configurations."
@@ -570,41 +649,29 @@ install_containerd(){
     fi
 }
 
-# Function: Download and install Kubernetes GPG key avoiding user interaction
+# Function: Download and install Kubernetes GPG key avoiding user interaction.
 # Usage example:
 # install_kubernetes_gpg_key
 install_kubernetes_gpg_key(){
     msg " Preparing to download Kubernetes GPG key."
     K_GPG_URL="$K_CORE:/stable:/$VERSION/deb/Release.key"
 
-    if [ -f "$K_GPG" ]; then
-        msg " Backing up current Kubernetes GPG key."
-        if ! cp "$K_GPG" "$K_GPG_BKP"; then
-            wrn " Failed to backup current Kubernetes GPG key."
-        else
-            msg " Current Kubernetes GPG key backed up."
-        fi
-    fi
+    msg " Backing up current Kubernetes GPG key."
+    backup_file "$K_GPG" "$K_GPG_BKP"
 
     msg " Downloading the Kubernetes GPG key."
     msg " Using url: $K_GPG_URL"
     if ! curl -fsSL $K_GPG_URL | gpg --dearmor -o $K_GPG_TMP; then
-        wrn " Clearing backup file."
-        rm -f "$K_GPG_BKP"
-        wrn " Backup file cleared."
         execution_error "$ERR_FFKKF"
     fi
-
     msg " Kubernetes GPG key downloaded."
-    msg " Updating Kubernetes GPG key from temporary file."
-    if mv "$K_GPG_TMP" "$K_GPG"; then
-        msg " Kubernetes GPG key updated."
-    else
-        execution_error " Failed to update Kubernetes GPG key."
-    fi
+
+    msg " Updating Kubernetes GPG key file."
+    update_file "$K_GPG_TMP" "$K_GPG"
+    msg " Kubernetes GPG key file updated."
 }
 
-# Function: Add Kubernetes repository
+# Function: Add Kubernetes repository.
 add_kubernetes_repository() {
     msg " Adding the Kubernetes repository to the system."
     echo "deb [signed-by=$K_GPG] $K_REPO /" | tee $K_LIST > /dev/null
@@ -622,6 +689,27 @@ refresh_packages_list() {
 upgrade_installed_packages() {
     msg " Upgrading installed packages to their latest versions."
     execute apt-get upgrade -y
+}
+
+# Function: Configure the kubectl tool.
+configure_kubectl() {  
+    # Ensure the .kube directory exists
+    if [ ! -d "$HOME/.kube" ]; then
+        msg " Creating .kube directory."
+        execute mkdir -p $HOME/.kube
+    fi
+
+    # Copy and set permissions for the configuration file
+    if [ ! -f $HOME/.kube/config ]; then
+        msg " Creating Kubectl user configuration."
+        execute cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+        msg " Setting configuration permissions."
+        execute chown $(id -u):$(id -g) $HOME/.kube/config
+        execute chmod 600 $HOME/.kube/config
+        msg " Permissions set to owner read/write only."
+    else
+        msg " kubectl configuration already exists."
+    fi
 }
 
 # Function: Add current node to a Master Node.
@@ -672,7 +760,7 @@ if [ -n "$WORKER_NODE" ]; then
   validate_hash "$HASH"    # Here $HASH is expected to be a path to the hash file
 fi
 
-# START INSTALLING
+# INSTALLING FLOW
 
 # update and upgrade the system (all nodes)
 refresh_packages_list
@@ -682,7 +770,6 @@ upgrade_installed_packages
 trap execution_error ERR
 
 # disable swap - swap is bad for kubernetes (all nodes)
-msg " Backing up fstab and disabling swap."
 msg " Starting to disable swap..."
 disable_swap
 msg " Swap disabled successfully."
@@ -735,14 +822,11 @@ add_kubernetes_repository
 
 refresh_packages_list
 
-# install
-msg " Install Kubelet."
+# Install kubernetes
+msg " Installing Kubernetes packages."
 install_package kubelet
-msg " Install Kubeadm."
 install_package kubeadm
-msg " Install Kubectl."
 install_package kubectl
-msg " Install Kubectx."
 install_package kubectx
 
 msg " Disabling auto-update for instaled packages."
@@ -754,7 +838,10 @@ execute hostnamectl set-hostname $HOSTNAME
 msg " Enabling Kubelet."
 execute systemctl enable --now kubelet
 # disable swap rollback from now on
-execute rm "/etc/fstab.backup"
+#execute rm "/etc/fstab.backup"
+
+msg " Configuring Kubectl."
+configure_kubectl
 
 if [ -n "$MASTER_NODE" ]; then
     # initialize the cluster (MASTER ONLY)
@@ -770,21 +857,5 @@ if [ -n "$WORKER_NODE" ]; then
     join_master
 fi
 
-# configure the kubectl tool
-# Ensure the .kube directory exists
-if [ ! -d "$HOME/.kube" ]; then
-    msg " Creating .kube directory."
-    execute mkdir -p $HOME/.kube
-fi
-
-# Copy and set permissions for the configuration file
-if [ ! -f $HOME/.kube/config ]; then
-    msg " Creating Kubectl user configuration."
-    execute cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    msg " Setting configuration permissions."
-    execute chown $(id -u):$(id -g) $HOME/.kube/config
-    execute chmod 600 $HOME/.kube/config
-    msg " Permissions set to owner read/write only."
-else
-    msg " Kubectl configuration already exists."
-fi
+msg " All done. "
+exit 0
