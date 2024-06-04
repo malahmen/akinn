@@ -362,7 +362,7 @@ validate_cidr_block() {
     if [ -z "$cidr" ]; then
         parameter_missing_error "$ERR_CIDRNS"
     fi
-    if ! [[ $cidr =~ $re_cidr ]]; then
+    if ! echo "$cidr" | grep -qE "$re_cidr"; then
         execution_error "$ERR_ICIDR"
     fi
 }
