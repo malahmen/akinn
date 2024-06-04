@@ -124,6 +124,8 @@ rollback_files(){
     revert_to_backup "$DOCKER_GPG_BKP" "$DOCKER_GPG" # rollback Docker GPG key
     revert_to_backup "$K_GPG_BKP" "$K_GPG" # rollback kubernetes GPG key
     revert_to_backup "$CCFB" "$CCF" # rollback containerd configuration
+    rm -rf "$DOCKER_GPG_TMP" # remove tmp files to avoid overwrite input
+    rm -rf "$K_GPG_TMP"
     rm -rf $HOME/.kube # clear kubectl configuration files
 }
 
