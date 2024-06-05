@@ -136,9 +136,6 @@ if [ -n "$MASTER_NODE" ]; then
     # initialize the cluster (MASTER ONLY)
     msg " Initializing the Cluster."
     execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
-    # throw in some crds plugins (MASTER ONLY)
-    msg " Installing Crds."
-    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
 fi
 
 if [ -n "$WORKER_NODE" ]; then
@@ -149,6 +146,13 @@ fi
 # needs to be done after the node is running.
 msg " Configuring Kubectl."
 configure_kubectl
+
+if [ -n "$MASTER_NODE" ]; then
+    # install Custom Resources Definitions (MASTER ONLY)
+    # needs kubectl installed and configured.
+    msg " Installing Crds."
+    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
+fi
 
 msg " All done. "
 exit 0

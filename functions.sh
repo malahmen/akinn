@@ -24,7 +24,7 @@ EOF
 msg(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${GREEN}$message${NC}\n" 
+        printf "${GREEN} $message${NC}\n" 
     fi
 }
 
@@ -34,7 +34,7 @@ msg(){
 wrn(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${YELLOW}$message${NC}\n" 
+        printf "${YELLOW} $message${NC}\n" 
     fi
 }
 
@@ -44,7 +44,7 @@ wrn(){
 oerr(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${RED}$message${NC}\n" 
+        printf "${RED} Error: $message${NC}\n" 
     fi
 }
 
@@ -55,14 +55,14 @@ backup_file() {
     local origin="$1"
     local destiny="$2"
     if [ -f "$origin" ]; then
-        msg " $origin exists, backing up."
+        msg "$origin exists, backing up."
         if ! cp "$origin" "$destiny"; then
-            wrn " failed to backup $origin."
+            wrn "failed to backup $origin."
         else
-            msg " $origin backed up."
+            msg "$origin backed up."
         fi
     else 
-        wrn " $origin not found, nothing to backup."
+        wrn "$origin not found, nothing to backup."
     fi
 }
 
@@ -74,14 +74,14 @@ revert_to_backup() {
     local backup="$1"
     local origin="$2"
     if [ -f "$backup" ]; then
-        msg " $backup exists, reverting."
+        msg "$backup exists, reverting."
         if ! mv "$backup" "$origin"; then
-            wrn " failed to revert $origin."
+            wrn "failed to revert $origin."
         else
-            msg " $origin reverted."
+            msg "$origin reverted."
         fi
     else
-        wrn " $backup not found, nothing to revert."
+        wrn "$backup not found, nothing to revert."
     fi
 }
 
@@ -94,15 +94,15 @@ update_file() {
     local source="$1"
     local destiny="$2"
     if [ -f "$source" ]; then
-        msg " $source exists, updating $destiny."
+        msg "$source exists, updating $destiny."
         if ! mv "$source" "$destiny"; then
-            oerr " failed to update $destiny."
+            oerr "failed to update $destiny."
             exit 1
         else
-            msg " $destiny updated."
+            msg "$destiny updated."
         fi
     else
-        oerr " $source not found, failed to update."
+        oerr "$source not found, failed to update."
         exit 1
     fi
 }
@@ -160,18 +160,16 @@ parameter_missing_error() {
 # Usage example:
 # load_versions
 load_versions() {
-    msg " Loading CRDs versions."
+    msg "Loading CRDs versions."
     if ! CRDS_VERSIONS=$(curl -s $CRDS_RELEASES | grep -Eo $re_crds_ver | sed 's/release-//' | sort | uniq); then
         execution_error "$ERR_FFCRDVER"
     fi
-    msg " CRDs versions loaded:"
-    echo "$CRDS_VERSIONS"
-    msg " Loading Kubernetes versions."
+    msg "CRDs versions loaded."
+    msg "Loading Kubernetes versions."
     if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed 's/Kubernetes //' | sort | uniq); then
         execution_error "$ERR_FFKVER"
     fi
-    msg " Kubernetes versions loaded:"
-    echo "$K_VERSIONS"
+    msg "Kubernetes versions loaded."
 }
 
 # Function: validates the architecture input
@@ -204,16 +202,16 @@ validate_hostname() {
 # validate_ip_address "$IP"
 validate_ip_address() {
     local ip=$1
-    msg " Checking IP exists..."
+    msg "Checking IP exists..."
     if [ -z "$ip" ]; then
         parameter_missing_error "$ERR_IPNS"
     fi
-    msg " IP exists: $ip"
-    msg " Validating IP: $ip"
+    msg "IP exists: $ip"
+    msg "Validating IP: $ip"
     if ! echo "$ip" | grep -qE "$re_ip"; then
         execution_error "$ERR_IIP"
     fi
-    msg " IP: $ip - valid."
+    msg "IP: $ip - valid."
     ping_it "$ip"
 }
 
@@ -222,11 +220,11 @@ validate_ip_address() {
 # ping_it "$ip"
 ping_it() {
     local address="$1"
-    msg " Checking if $address is reachable."
+    msg "Checking if $address is reachable."
     if ! ping -c 1 "$address" > /dev/null 2>&1; then
         execution_error "$ERR_UNRIP"
     fi
-    msg " IP: $address - reachable."
+    msg "IP: $address - reachable."
 }
 
 # Function: checks if a port in a IP address is free.
@@ -237,16 +235,16 @@ poke_it() {
     local this_port="$1"
     # poke worker node port
     if ss -tuln | grep -q ":$this_port"; then
-        wrn " Local port $this_port is in use."
+        wrn "Local port $this_port is in use."
     else
-        msg " Local port $this_port is free."
-        #msg " Opening local port: $port."
+        msg "Local port $this_port is free."
+        #msg "Opening local port: $port."
         #ufw allow $port/tcp
     fi
     # poke master node port
     if [ -n "$IP" ]; then
         if nc -zv $IP $this_port 2>&1 | grep -q succeeded; then
-            msg " Port $this_port is open on $IP"
+            msg "Port $this_port is open on $IP"
         else
             execution_error "$ERR_MNPC"
         fi
@@ -288,13 +286,13 @@ validate_token() {
         parameter_missing_error "$ERR_TFNS"
     fi
     token_file_path=$(eval echo "$token_file")
-    msg " Looking for the token file: $token_file_path"
+    msg "Looking for the token file: $token_file_path"
     if [ ! -f "$token_file_path" ]; then
         execution_error "$ERR_TFNE"
     fi
-    msg " Token file exists. Reading it."
+    msg "Token file exists. Reading it."
     TOKEN=$(cat "$token_file_path")
-    msg " Token file read."
+    msg "Token file read."
 }
 
 # Function: validates the hash input.
@@ -307,13 +305,13 @@ validate_hash() {
         parameter_missing_error "$ERR_HFNS"
     fi
     hash_file_path=$(eval echo "$hash_file")
-    msg " Looking for the hash file: $hash_file_path"
+    msg "Looking for the hash file: $hash_file_path"
     if [ ! -f "$hash_file_path" ]; then
         execution_error "$ERR_HFNE"
     fi
-    msg " Hash file exists. Reading it."
+    msg "Hash file exists. Reading it."
     HASH=$(cat "$hash_file_path")
-    msg " Hash file read."
+    msg "Hash file read."
 }
 
 # Function: Validate Kubernetes and CRDs versions against existing ones.
@@ -401,10 +399,10 @@ execute_sensitive() {
 is_package_installed() {
     PACKAGE_NAME=$1
     if dpkg-query -W -f='${Status}' "$PACKAGE_NAME" 2>/dev/null | grep -Eq "^(install|hold) ok installed$"; then
-        wrn " Package $PACKAGE_NAME is already installed."
+        wrn "Package $PACKAGE_NAME is already installed."
         return 0 # true in shell scripts
     else
-        wrn " Package $PACKAGE_NAME is not yet installed."
+        wrn "Package $PACKAGE_NAME is not yet installed."
         return 1 # false (anything above zero is) in shell scripts
     fi
 }
@@ -416,9 +414,9 @@ install_package() {
     local package=$1
     if ! is_package_installed $package; then
         if ! apt-get install -y "$package"; then
-            wrn " Installation failed for $package, attempting to fix broken dependencies..."
+            wrn "Installation failed for $package, attempting to fix broken dependencies..."
             execute apt-get --fix-broken install
-            msg " Retrying installation of $package..."
+            msg "Retrying installation of $package..."
             if ! apt-get install -y "$package"; then
                 execution_error "$ERR_IRF"
             fi
@@ -433,7 +431,7 @@ download_and_apply() {
     local url=$1
     local file=$2
     if curl -fsSL "$url" -o "$file"; then
-        msg " $file downloaded successfully."
+        msg "$file downloaded successfully."
     else
         wrn "Error: Failed to download $file from $url. Retrying..."
         execute sleep 5
@@ -499,58 +497,58 @@ read_parameters() {
 # Usage example:
 # install_docker_gpg_key
 install_docker_gpg_key() {
-    msg " Backing up Docker GPG key."
+    msg "Backing up Docker GPG key."
     backup_file "$DOCKER_GPG" "$DOCKER_GPG_BKP"
 
-    msg " Downloading the Docker GPG key."
+    msg "Downloading the Docker GPG key."
     if ! curl -fsSL "$DOCKER_GPG_URL" | gpg --dearmour -o "$DOCKER_GPG_TMP"; then
         execution_error "$ERR_FFDGPGK"
     fi
-    msg " Docker GPG key downloaded."
+    msg "Docker GPG key downloaded."
 
-    msg " Updating Docker GPG key."
+    msg "Updating Docker GPG key."
     update_file "$DOCKER_GPG_TMP" "$DOCKER_GPG"
-    msg " Docker GPG key updated."
+    msg "Docker GPG key updated."
 }
 
 # Function: Add Docker repository.
 add_docker_repository() {
-    msg " Adding the Docker repository to the system."
+    msg "Adding the Docker repository to the system."
     if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable" -y; then
         execution_error "$ERR_FADR"
     fi
-    msg " Docker repository added."
+    msg "Docker repository added."
 }
 
 install_containerd() {
     # check how to install docker with their remote script if the previous method fails
-    msg " Installing Containerd package."
+    msg "Installing Containerd package."
     install_package containerd.io
 
-    msg " Backing up Containerd configuration."
+    msg "Backing up Containerd configuration."
     backup_file "$CCF" "$CCFB"
 
     # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
-    msg " Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
+    msg "Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
     execute containerd config default | tee $CCF >/dev/null 2>&1
-    msg " Updating the default configuration for Containerd."
+    msg "Updating the default configuration for Containerd."
     execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' $CCF
 
     # Restarting containerd to apply new configurations
-    msg " Restarting containerd to apply new configurations."
+    msg "Restarting containerd to apply new configurations."
     execute systemctl restart containerd
     if ! systemctl is-active --quiet containerd; then
         execution_error "$ERR_FRC"
     fi
-    msg " Containerd restarted and is active."
+    msg "Containerd restarted and is active."
 
     # Ensuring containerd is enabled on boot
     if ! systemctl is-enabled --quiet containerd; then
-        msg " Enabling containerd to start on boot."
+        msg "Enabling containerd to start on boot."
         execute systemctl enable containerd
-        msg " Containerd enabled successfully."
+        msg "Containerd enabled successfully."
     else
-        msg " Containerd is already enabled on boot."
+        msg "Containerd is already enabled on boot."
     fi
 }
 
@@ -558,41 +556,41 @@ install_containerd() {
 # Usage example:
 # install_kubernetes_gpg_key
 install_kubernetes_gpg_key(){
-    msg " Preparing to download Kubernetes GPG key."
+    msg "Preparing to download Kubernetes GPG key."
     K_GPG_URL="$K_CORE:/stable:/$VERSION/deb/Release.key"
 
-    msg " Backing up current Kubernetes GPG key."
+    msg "Backing up current Kubernetes GPG key."
     backup_file "$K_GPG" "$K_GPG_BKP"
 
-    msg " Downloading the Kubernetes GPG key."
-    msg " Using url: $K_GPG_URL"
+    msg "Downloading the Kubernetes GPG key."
+    msg "Using url: $K_GPG_URL"
     if ! curl -fsSL $K_GPG_URL | gpg --dearmor -o $K_GPG_TMP; then
         execution_error "$ERR_FFKKF"
     fi
-    msg " Kubernetes GPG key downloaded."
+    msg "Kubernetes GPG key downloaded."
 
-    msg " Updating Kubernetes GPG key file."
+    msg "Updating Kubernetes GPG key file."
     update_file "$K_GPG_TMP" "$K_GPG"
-    msg " Kubernetes GPG key file updated."
+    msg "Kubernetes GPG key file updated."
 }
 
 # Function: Add Kubernetes repository.
 add_kubernetes_repository() {
-    msg " Adding the Kubernetes repository to the system."
+    msg "Adding the Kubernetes repository to the system."
     echo "deb [signed-by=$K_GPG] $K_REPO /" | tee $K_LIST > /dev/null
     if [ $? -ne 0 ]; then
         execution_error "$ERR_FAKR"
     fi
-    msg " Kubernetes repository added."
+    msg "Kubernetes repository added."
 }
 
 refresh_packages_list() {
-    msg " Refreshing the package lists."
+    msg "Refreshing the package lists."
     execute apt-get update
 }
 
 upgrade_installed_packages() {
-    msg " Upgrading installed packages to their latest versions."
+    msg "Upgrading installed packages to their latest versions."
     execute apt-get upgrade -y
 }
 
@@ -600,20 +598,20 @@ upgrade_installed_packages() {
 configure_kubectl() {  
     # Ensure the .kube directory exists
     if [ ! -d "$HOME/.kube" ]; then
-        msg " Creating .kube directory."
+        msg "Creating .kube directory."
         execute mkdir -p $HOME/.kube
     fi
 
     # Copy and set permissions for the configuration file
     if [ ! -f $HOME/.kube/config ]; then
-        msg " Creating Kubectl user configuration."
+        msg "Creating Kubectl user configuration."
         execute cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-        msg " Setting configuration permissions."
+        msg "Setting configuration permissions."
         execute chown $(id -u):$(id -g) $HOME/.kube/config
         execute chmod 600 $HOME/.kube/config
-        msg " Permissions set to owner read/write only."
+        msg "Permissions set to owner read/write only."
     else
-        msg " kubectl configuration already exists."
+        msg "kubectl configuration already exists."
     fi
 }
 
@@ -622,12 +620,12 @@ configure_kubectl() {
 # Usage example:
 # join_master
 join_master() {
-    msg " Joining Master Node."
+    msg "Joining Master Node."
     ping_it "$IP" # ping IP
     poke_it "$PORT" # check if port is free
     # Clean variables (remove whitespace)
     TOKEN=$(echo "$TOKEN" | xargs)
     HASH=$(echo "$HASH" | xargs)
     execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
-    msg " $HOSTNAME joined Master Node."
+    msg "$HOSTNAME joined Master Node."
 }
