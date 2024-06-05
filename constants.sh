@@ -20,3 +20,4 @@ K_GPG="/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
 
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
 CRDS_REPO="https://raw.githubusercontent.com/projectcalico/calico" # Kubernetes Custom Resources Definitions repository
+KBCTLOCFG="/etc/kubernetes/admin.conf"

@@ -152,6 +152,8 @@ if [ -n "$MASTER_NODE" ]; then
     # needs kubectl installed and configured.
     msg " Installing Crds."
     download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
+    msg "Generating 'join' credentials."
+    generate_join_credentials
 fi
 
 msg " All done. "

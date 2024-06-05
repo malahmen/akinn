@@ -120,6 +120,10 @@ disable_swap() {
 # Usage example:
 # rollback_files
 rollback_files(){
+    if command -v kubeadm &> /dev/null; then
+        wrn "Reseting kubeadm."
+        kubeadm reset -f
+    fi
     revert_to_backup "$FSTABFB" "$FSTABF" # rollback fstab file
     revert_to_backup "$DOCKER_GPG_BKP" "$DOCKER_GPG" # rollback Docker GPG key
     revert_to_backup "$K_GPG_BKP" "$K_GPG" # rollback kubernetes GPG key
@@ -603,16 +607,57 @@ configure_kubectl() {
     fi
 
     # Copy and set permissions for the configuration file
-    if [ ! -f $HOME/.kube/config ]; then
-        msg "Creating Kubectl user configuration."
-        execute cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-        msg "Setting configuration permissions."
-        execute chown $(id -u):$(id -g) $HOME/.kube/config
-        execute chmod 600 $HOME/.kube/config
-        msg "Permissions set to owner read/write only."
+    if [ ! -f $KBCTLCFG ]; then
+        if [ -f KBCTLOCFG ]; then
+            msg "Creating Kubectl user configuration."
+            execute cp -i $KBCTLOCFG $KBCTLCFG
+            msg "Setting configuration permissions."
+            #urrent_user=$(echo $SUDO_USER)
+            execute chown $(echo $SUDO_USER) $KBCTLCFG
+            execute chmod u+rx $file_path
+            #execute chown $(id -u):$(id -g) $HOME/.kube/config
+            #execute chmod 600 $HOME/.kube/config
+            msg "Permissions set to owner read/execute only."
+        else
+            oerr "$KBCTLOCFG is missing."
+        fi
     else
         msg "kubectl configuration already exists."
     fi
+}
+
+# Function: Generates the discovery token.
+# Will save it in a file in a configurable location.
+# Usage example:
+# generate_join_token "some-path"
+generate_join_token() {
+    local path="$1"
+    wrn "Generating a new token."
+    $(sudo kubeadm token create) > "$path/token"
+}
+
+# Function: Generates the discovery token CA certificate hash.
+# Will save it in a file in a configurable location.
+# Usage example:
+# generate_join_hash "some-path"
+generate_join_hash() {
+    local path="$1"
+    wrn "Retrieving the discovery token CA certificate hash."
+    $(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
+       openssl rsa -pubin -outform der 2>/dev/null | \
+       openssl dgst -sha256 -hex | \
+       sed 's/^.* //') > "$path/hash"
+}
+
+# Function: Generates the discovery token and its CA certificate hash.
+# Usage example:
+# generate_join_credentials
+generate_join_credentials() {
+    if [ ! -d "$directory" ]; then
+        execute mkdir -p $MNJCRDFS
+    fi
+    generate_token "$MNJCRDFS"
+    generate_hash "$MNJCRDFS"
 }
 
 # Function: Add current node to a Master Node.
