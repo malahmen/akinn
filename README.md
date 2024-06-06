@@ -12,8 +12,8 @@ It supports configurations for multiple nodes, making it ideal for scalable depl
 - User with sudo privileges
 
 ## Capabilities
-- Automated Installation: Streamline the setup of Kubernetes on new nodes with minimal manual intervention.
-- Multi-Node Support: Easily configure and deploy multi-node Kubernetes clusters.
+- Automated Installation: Streamline the setup of Kubernetes on new nodes with minimal user input.
+- Multi-Node Support: Easily configure and deploy master or worker nodes for Kubernetes clusters.
 - Compatibility: Designed specifically for Ubuntu and Raspberry Pi systems.
 - Troubleshooting: Includes error handling and logging functions for easier issue resolution.
 - Security: Provides guidelines for securing Kubernetes clusters created with Akinn.
