@@ -120,9 +120,11 @@ disable_swap() {
 # Usage example:
 # rollback_files
 rollback_files(){
-    if command -v kubeadm &> /dev/null; then
-        wrn "Reseting kubeadm."
-        kubeadm reset -f
+    if [ -f "$KBCTLCFG" ]; then
+        if command -v kubeadm &> /dev/null; then
+            wrn "Reseting kubeadm."
+            kubeadm reset -f
+        fi
     fi
     revert_to_backup "$FSTABFB" "$FSTABF" # rollback fstab file
     revert_to_backup "$DOCKER_GPG_BKP" "$DOCKER_GPG" # rollback Docker GPG key
@@ -599,6 +601,9 @@ upgrade_installed_packages() {
 }
 
 # Function: Configure the kubectl tool.
+# Will be needed to install the Custom Resources Definitions.
+# Usage example:
+# configure_kubectl
 configure_kubectl() {  
     # Ensure the .kube directory exists
     if [ ! -d "$HOME/.kube" ]; then
