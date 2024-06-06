@@ -613,7 +613,7 @@ configure_kubectl() {
 
     # Copy and set permissions for the configuration file
     if [ ! -f $KBCTLCFG ]; then
-        if [ -f KBCTLOCFG ]; then
+        if [ -f $KBCTLOCFG ]; then
             msg "Creating Kubectl user configuration."
             execute cp -i $KBCTLOCFG $KBCTLCFG
             msg "Setting configuration permissions."
