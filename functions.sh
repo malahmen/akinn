@@ -638,7 +638,8 @@ configure_kubectl() {
 generate_join_token() {
     local path="$1"
     wrn "Generating a new token."
-    $(sudo kubeadm token create) > "$path/token"
+    wrn "Using path: $path."
+    echo $(sudo kubeadm token create) > "$path/token"
 }
 
 # Function: Generates the discovery token CA certificate hash.
@@ -648,7 +649,8 @@ generate_join_token() {
 generate_join_hash() {
     local path="$1"
     wrn "Retrieving the discovery token CA certificate hash."
-    $(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
+    wrn "Using path: $path."
+    echo $(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
        openssl rsa -pubin -outform der 2>/dev/null | \
        openssl dgst -sha256 -hex | \
        sed 's/^.* //') > "$path/hash"
@@ -661,8 +663,8 @@ generate_join_credentials() {
     if [ ! -d "$directory" ]; then
         execute mkdir -p $MNJCRDFS
     fi
-    generate_token "$MNJCRDFS"
-    generate_hash "$MNJCRDFS"
+    generate_join_token "$MNJCRDFS"
+    generate_join_hash "$MNJCRDFS"
 }
 
 # Function: Add current node to a Master Node.

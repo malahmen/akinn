@@ -1,11 +1,11 @@
 #!/bin/sh
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo " Must be run as root. Trying with sudo..."
+    echo "Must be run as root. Trying with sudo..."
     exec sudo HOME="$HOME" "$0" "$@"
     exit 1
 fi
-echo " Automated Kubernetes Installation for New Nodes - without user interaction."
+echo "Automated Kubernetes Installation for New Nodes - without user interaction."
 
 # Get the current directory of this script.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -64,22 +64,22 @@ upgrade_installed_packages
 trap execution_error ERR
 
 # disable swap - swap is bad for kubernetes (all nodes)
-msg " Starting to disable swap..."
+msg "Starting to disable swap..."
 disable_swap
-msg " Swap disabled successfully."
+msg "Swap disabled successfully."
 
 # add kernel modules to load on boot for containerd (all nodes)
-msg " Adding kernel modules for containerd to be loaded on boot up."
+msg "Adding kernel modules for containerd to be loaded on boot up."
 if ! echo "overlay
 br_netfilter" | tee /etc/modules-load.d/containerd.conf > /dev/null; then
     execution_error "$ERR_FWMLC"
 fi
-msg " Loading modules now."
+msg "Loading modules now."
 execute modprobe overlay
 execute modprobe br_netfilter
 
 # configure kernel parameters for networking and IP forwarding related to Kubernetes (all nodes)
-msg " Configuring system kernel parameters for networking and IP forwarding."
+msg "Configuring system kernel parameters for networking and IP forwarding."
 if ! echo "net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
@@ -87,11 +87,11 @@ net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
 fi
 
 # reload after 
-msg " Reloading."
+msg "Reloading."
 execute sysctl --system
 
 # make sure we have the needed packages installed with automated error recovery (all nodes)
-msg " Installing required packages."
+msg "Installing required packages."
 install_package curl
 install_package gnupg2
 install_package software-properties-common
@@ -117,25 +117,34 @@ add_kubernetes_repository
 refresh_packages_list
 
 # Install kubernetes
-msg " Installing Kubernetes packages."
+msg "Installing Kubernetes packages."
 install_package kubelet
 install_package kubeadm
 install_package kubectl
 install_package kubectx
 
-msg " Disabling auto-update for instaled packages."
+msg "Disabling auto-update for instaled packages."
 execute apt-mark hold kubelet kubeadm kubectl kubectx # disable auto update
 # set the hostname for each node
-msg " Setting the node hostname."
+msg "Setting the node hostname."
 execute hostnamectl set-hostname $HOSTNAME 
 # enable kubelet
-msg " Enabling Kubelet."
+msg "Enabling Kubelet."
 execute systemctl enable --now kubelet
 
 if [ -n "$MASTER_NODE" ]; then
     # initialize the cluster (MASTER ONLY)
-    msg " Initializing the Cluster."
-    execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
+    if [ ! -f $KBCTLOCFG ]; then
+        msg "Initializing the Cluster."
+        execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
+    else
+        wrn "Checking for a previous CLuster."
+        if ! kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR; then
+            wrn "Continuing without initializing a new Cluster."
+        else
+            msg "Managed to initialize the Cluster."
+        fi
+    fi
 fi
 
 if [ -n "$WORKER_NODE" ]; then
@@ -144,17 +153,17 @@ if [ -n "$WORKER_NODE" ]; then
 fi
 
 # needs to be done after the node is running.
-msg " Configuring Kubectl."
+msg "Configuring Kubectl."
 configure_kubectl
 
 if [ -n "$MASTER_NODE" ]; then
     # install Custom Resources Definitions (MASTER ONLY)
     # needs kubectl installed and configured.
-    msg " Installing Crds."
-    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml calico.yaml
+    msg "Installing Custom Resources Definitions."
+    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml crds.yaml
     msg "Generating 'join' credentials."
     generate_join_credentials
 fi
 
-msg " All done. "
+msg "All done. "
 exit 0
