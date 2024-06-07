@@ -397,6 +397,17 @@ execute_sensitive() {
     fi
 }
 
+# Function: execute commands ignoring resulting errors.
+# Usage example:
+# execute_non_blocking apt install -y kubelet kubeadm kubectl kubectx
+execute_non_blocking() {
+   "$@"
+    local status=$?
+    if [ $status -ne 0 ]; then
+        oerr "$ERR_FEC"
+    fi 
+}
+
 # Function: detects if package is installed.
 # returns 0 if installed
 # returns 1 if not installed
@@ -611,20 +622,27 @@ configure_kubectl() {
         execute mkdir -p $HOME/.kube
     fi
 
-    # Copy and set permissions for the configuration file
+    # Check if we already got a configuration.
     if [ ! -f $KBCTLCFG ]; then
-        if [ -f $KBCTLOCFG ]; then
-            msg "Creating Kubectl user configuration."
-            execute cp -i $KBCTLOCFG $KBCTLCFG
-            msg "Setting configuration permissions."
-            #urrent_user=$(echo $SUDO_USER)
-            execute chown $(echo $SUDO_USER) $KBCTLCFG
-            execute chmod u+rx $KBCTLCFG
-            #execute chown $(id -u):$(id -g) $HOME/.kube/config
-            #execute chmod 600 $HOME/.kube/config
-            msg "Permissions set to owner read/execute only."
+        if [ -n $MASTER_NODE]; then
+            # Copy and set permissions for the configuration file
+            if [ -f $KBCTLOCFG ]; then
+                msg "Creating Kubectl user configuration."
+                execute cp -i $KBCTLOCFG $KBCTLCFG
+                msg "Setting configuration permissions."
+                #current_user=$(echo $SUDO_USER)
+                execute chown $(echo $SUDO_USER) $KBCTLCFG
+                execute chmod u+rx $KBCTLCFG
+                #execute chown $(id -u):$(id -g) $HOME/.kube/config
+                #execute chmod 600 $HOME/.kube/config
+                msg "Permissions set to owner read/execute only."
+            else
+                oerr "$KBCTLOCFG is missing."
+            fi
         else
-            oerr "$KBCTLOCFG is missing."
+            # Get the Master node config into the Worker node
+            wrn "Copying configuration from Master node: $IP"
+            execute_non_blocking scp $MASTER_USER@$IP:$KBCTLOCFG $KBCTLCFG
         fi
     else
         msg "kubectl configuration already exists."

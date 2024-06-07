@@ -1,5 +1,4 @@
 # Parameters with default values
-HOSTNAME="" # Node reulting name (from master or worker option).
 MASTER_NODE="" 	# Master node name - if installing one, need a name.
 WORKER_NODE="" 	# Worker node name - if installing one, need a name.
 VERSION=v1.30 # Kubernetes default version.
