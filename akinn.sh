@@ -152,11 +152,10 @@ if [ -n "$WORKER_NODE" ]; then
     join_master
 fi
 
-# needs to be done after the node is running.
-msg "Configuring Kubectl."
-configure_kubectl
-
 if [ -n "$MASTER_NODE" ]; then
+    # needs to be done after the node is running.
+    msg "Configuring Kubectl."
+    configure_kubectl
     # install Custom Resources Definitions (MASTER ONLY)
     # needs kubectl installed and configured.
     msg "Installing Custom Resources Definitions."
