@@ -619,7 +619,7 @@ configure_kubectl() {
             msg "Setting configuration permissions."
             #urrent_user=$(echo $SUDO_USER)
             execute chown $(echo $SUDO_USER) $KBCTLCFG
-            execute chmod u+rx $file_path
+            execute chmod u+rx $KBCTLCFG
             #execute chown $(id -u):$(id -g) $HOME/.kube/config
             #execute chmod 600 $HOME/.kube/config
             msg "Permissions set to owner read/execute only."
