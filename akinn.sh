@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/variables.sh" # loads used variables. requires constants and parameters.
 . "$SCRIPT_DIR/errors.sh" # loads the error messages.
 . "$SCRIPT_DIR/functions.sh" # loads the functions used.
+. "$SCRIPT_DIR/protocols.sh" # loads the instalation flows for each kind of node used.
 
 # Read parameters from command line
 read_parameters "$@"
@@ -46,6 +47,8 @@ fi
 
 # check worker node related parameters
 if [ -n "$WORKER_NODE" ]; then
+  # validate the password file 
+  validate_remote_password "$MASTER_LOGIN"
   # validate the port
   validate_port "$PORT"
   # validate the token
@@ -133,36 +136,14 @@ msg "Enabling Kubelet."
 execute systemctl enable --now kubelet
 
 if [ -n "$MASTER_NODE" ]; then
-    # initialize the cluster (MASTER ONLY)
-    if [ ! -f $KBCTLOCFG ]; then
-        msg "Initializing the Cluster."
-        execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
-    else
-        wrn "Checking for a previous CLuster."
-        if ! kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR; then
-            wrn "Continuing without initializing a new Cluster."
-        else
-            msg "Managed to initialize the Cluster."
-        fi
-    fi
-fi
-
-if [ -n "$WORKER_NODE" ]; then
-    # join the cluster (WORKER ONLY)
-    join_master
-fi
-
-# needs to be done after the node is running.
-msg "Configuring Kubectl."
-configure_kubectl
-
-if [ -n "$MASTER_NODE" ]; then
-    # install Custom Resources Definitions (MASTER ONLY)
-    # needs kubectl installed and configured.
-    msg "Installing Custom Resources Definitions."
-    download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml crds.yaml
-    msg "Generating 'join' credentials."
-    generate_join_credentials
+    # initialize the master node protocol
+    master_protocol
+elif [ -n "$WORKER_NODE" ]; then
+    # initialize the worker node protocol
+    worker_protocol   
+else
+    # how did we got here with the validation
+    execution_error "$ERR_SE"
 fi
 
 msg "All done. "

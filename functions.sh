@@ -7,6 +7,7 @@ display_usage() {
   Options:
     -m MASTER_NODE   Set the master node name
     -w WORKER_NODE   Set the worker node name
+    -l LOGIN         Set the master node login password
     -v VERSION       Set the Kubernetes version
     -c CRDS          Set the Kubernetes Custom Resources Definitions version
     -n CIDR          Set the Classless Inter-Domain Routing blocks for Kubernetes pods
@@ -291,7 +292,7 @@ validate_token() {
     if [ -z "$token_file" ]; then
         parameter_missing_error "$ERR_TFNS"
     fi
-    token_file_path=$(eval echo "$token_file")
+    local token_file_path=$(eval echo "$token_file")
     msg "Looking for the token file: $token_file_path"
     if [ ! -f "$token_file_path" ]; then
         execution_error "$ERR_TFNE"
@@ -310,7 +311,7 @@ validate_hash() {
     if [ -z "$hash_file" ]; then
         parameter_missing_error "$ERR_HFNS"
     fi
-    hash_file_path=$(eval echo "$hash_file")
+    local hash_file_path=$(eval echo "$hash_file")
     msg "Looking for the hash file: $hash_file_path"
     if [ ! -f "$hash_file_path" ]; then
         execution_error "$ERR_HFNE"
@@ -318,6 +319,25 @@ validate_hash() {
     msg "Hash file exists. Reading it."
     HASH=$(cat "$hash_file_path")
     msg "Hash file read."
+}
+
+# Function: validates the login password input.
+# Also reads the password value from its file.
+# Usage example:
+# validate_remote_password "$MASTER_LOGIN"
+validate_remote_password() {
+    local password_file=$1
+    if [ -z "$password_file" ]; then
+        parameter_missing_error "$ERR_PFNS"
+    fi
+    local password_file_path=$(eval echo "$password_file")
+    msg "Looking for the Master node password file: $password_file_path"
+    if [ ! -f "$password_file_path" ]; then
+        execution_error "$ERR_PFNE"
+    fi
+    msg "Password file exists. Using it."
+    MASTER_LOGIN=$password_file_path
+    msg "Password file done."
 }
 
 # Function: Validate Kubernetes and CRDs versions against existing ones.
@@ -463,13 +483,18 @@ download_and_apply() {
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
-  while getopts ":m:w:v:c:n:i:p:t:h:a:" options; do
+  while getopts ":m:w:l:v:c:n:i:p:t:h:a:" options; do
     case "${options}" in
       m)
         MASTER_NODE=${OPTARG}
         ;;
       w)
         WORKER_NODE=${OPTARG}
+        ;;
+      l)
+        if [ -n "$WORKER_NODE" ]; then
+          MASTER_LOGIN=${OPTARG}
+        fi
         ;;
       v)
         VERSION=${OPTARG}
@@ -640,9 +665,11 @@ configure_kubectl() {
                 oerr "$KBCTLOCFG is missing."
             fi
         else
+            # This package is only needed in this situation.
+            install_package sshpass
             # Get the Master node config into the Worker node
             wrn "Copying configuration from Master node: $IP"
-            execute_non_blocking scp $MASTER_USER@$IP:$KBCTLOCFG $KBCTLCFG
+            execute_non_blocking sshpass -f $MASTER_LOGIN scp $MASTER_USER@$IP:$KBCTLOCFG $KBCTLCFG
         fi
     else
         msg "kubectl configuration already exists."
