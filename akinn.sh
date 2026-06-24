@@ -63,8 +63,9 @@ fi
 refresh_packages_list
 upgrade_installed_packages
 
-# enabling error handling with "automated recovery"
-trap execution_error ERR
+# Error handling is explicit: POSIX sh has no ERR trap, so every state-changing
+# command below is wrapped in `execute` / guarded with `|| execution_error`,
+# which rolls back changes via rollback_files before exiting.
 
 # disable swap - swap is bad for kubernetes (all nodes)
 msg "Starting to disable swap..."
