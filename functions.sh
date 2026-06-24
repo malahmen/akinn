@@ -11,11 +11,12 @@ display_usage() {
     -v VERSION       Set the Kubernetes version
     -c CRDS          Set the Kubernetes Custom Resources Definitions version
     -n CIDR          Set the Classless Inter-Domain Routing blocks for Kubernetes pods
-    -i IP            Set the master node IP address for the worker
+    -i IP            Worker: the master node IP to join. Master: advertise address (defaults to the node's first IP)
     -p PORT          Set the master node port number for the worker
     -t TOKEN         Set the token for the worker to join the master
     -h HASH          Set the hash for the worker to join the master
     -a ARCH          Set the architecture
+    -u MASTER_USER   SSH user on the master node (worker uses it to copy kubeconfig; defaults to \$SUDO_USER)
 EOF
 }
 
@@ -25,7 +26,7 @@ EOF
 msg(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${GREEN} $message${NC}\n" 
+        printf '%b %s%b\n' "$GREEN" "$message" "$NC"
     fi
 }
 
@@ -35,7 +36,7 @@ msg(){
 wrn(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${YELLOW} $message${NC}\n" 
+        printf '%b %s%b\n' "$YELLOW" "$message" "$NC"
     fi
 }
 
@@ -45,8 +46,21 @@ wrn(){
 oerr(){
     local message="$1"
     if [ -n "$message" ]; then
-        printf "${RED} Error: $message${NC}\n" 
+        printf '%b Error: %s%b\n' "$RED" "$message" "$NC"
     fi
+}
+
+# Function: expand a leading ~ to $HOME without eval.
+# Using `eval` on a user-supplied path would let values like '$(reboot)' run as
+# root; this expands only a leading tilde and returns everything else verbatim.
+# Usage example:
+# path=$(expand_path "$input")
+expand_path() {
+    case "$1" in
+        "~")   printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;;
+        *)     printf '%s\n' "$1" ;;
+    esac
 }
 
 # Function: creates backup file from origin file.
@@ -113,8 +127,8 @@ update_file() {
 # disable_swap
 disable_swap() {
     backup_file "$FSTABF" "$FSTABFB"
-    swapoff -a
-    sed -i '/ swap / s/^/#/' /etc/fstab
+    execute swapoff -a
+    execute sed -i '/ swap / s/^/#/' /etc/fstab
 }
 
 # Function: rollback file changes
@@ -173,7 +187,10 @@ load_versions() {
     fi
     msg "CRDs versions loaded."
     msg "Loading Kubernetes versions."
-    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed 's/Kubernetes //' | sort | uniq); then
+    # GitHub's releases page lists bare patch tags (v1.34.2). The k8s apt repo
+    # (pkgs.k8s.io/.../stable:/v1.34/deb/) and the VERSION input are keyed on the
+    # MINOR version, so collapse patch tags to minors for validation.
+    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed -E 's/(v[0-9]+\.[0-9]+)\.[0-9]+/\1/' | sort | uniq); then
         execution_error "$ERR_FFKVER"
     fi
     msg "Kubernetes versions loaded."
@@ -292,7 +309,7 @@ validate_token() {
     if [ -z "$token_file" ]; then
         parameter_missing_error "$ERR_TFNS"
     fi
-    local token_file_path=$(eval echo "$token_file")
+    local token_file_path=$(expand_path "$token_file")
     msg "Looking for the token file: $token_file_path"
     if [ ! -f "$token_file_path" ]; then
         execution_error "$ERR_TFNE"
@@ -311,7 +328,7 @@ validate_hash() {
     if [ -z "$hash_file" ]; then
         parameter_missing_error "$ERR_HFNS"
     fi
-    local hash_file_path=$(eval echo "$hash_file")
+    local hash_file_path=$(expand_path "$hash_file")
     msg "Looking for the hash file: $hash_file_path"
     if [ ! -f "$hash_file_path" ]; then
         execution_error "$ERR_HFNE"
@@ -330,7 +347,7 @@ validate_remote_password() {
     if [ -z "$password_file" ]; then
         parameter_missing_error "$ERR_PFNS"
     fi
-    local password_file_path=$(eval echo "$password_file")
+    local password_file_path=$(expand_path "$password_file")
     msg "Looking for the Master node password file: $password_file_path"
     if [ ! -f "$password_file_path" ]; then
         execution_error "$ERR_PFNE"
@@ -483,7 +500,7 @@ download_and_apply() {
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
-  while getopts ":m:w:l:v:c:n:i:p:t:h:a:" options; do
+  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:" options; do
     case "${options}" in
       m)
         MASTER_NODE=${OPTARG}
@@ -492,9 +509,7 @@ read_parameters() {
         WORKER_NODE=${OPTARG}
         ;;
       l)
-        if [ -n "$WORKER_NODE" ]; then
-          MASTER_LOGIN=${OPTARG}
-        fi
+        MASTER_LOGIN=${OPTARG}
         ;;
       v)
         VERSION=${OPTARG}
@@ -506,27 +521,22 @@ read_parameters() {
         CIDR=${OPTARG}
         ;;
       i)
-        if [ -n "$WORKER_NODE" ]; then
-          IP=${OPTARG}
-        fi
+        IP=${OPTARG}
         ;;
       p)
-        if [ -n "$WORKER_NODE" ]; then
-          PORT=${OPTARG}
-        fi
+        PORT=${OPTARG}
         ;;
       t)
-        if [ -n "$WORKER_NODE" ]; then
-          TOKEN=${OPTARG}
-        fi
+        TOKEN=${OPTARG}
         ;;
       h)
-        if [ -n "$WORKER_NODE" ]; then
-          HASH=${OPTARG}
-        fi
+        HASH=${OPTARG}
         ;;
       a)
         ARCH=${OPTARG}
+        ;;
+      u)
+        MASTER_USER=${OPTARG}
         ;;
       *)
         execution_error "$ERR_UO"
@@ -572,7 +582,9 @@ install_containerd() {
 
     # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
     msg "Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
-    execute containerd config default | tee $CCF >/dev/null 2>&1
+    # Not a pipeline: a failure in `containerd config default` inside `a | b`
+    # would only exit the subshell, leaving a truncated config.toml behind.
+    containerd config default > "$CCF" 2>/dev/null || execution_error "$ERR_FCC"
     msg "Updating the default configuration for Containerd."
     execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' $CCF
 
@@ -612,6 +624,7 @@ install_kubernetes_gpg_key(){
     msg "Kubernetes GPG key downloaded."
 
     msg "Updating Kubernetes GPG key file."
+    execute mkdir -p "$(dirname "$K_GPG")" # keyrings dir may not exist on a fresh node
     update_file "$K_GPG_TMP" "$K_GPG"
     msg "Kubernetes GPG key file updated."
 }
@@ -619,6 +632,9 @@ install_kubernetes_gpg_key(){
 # Function: Add Kubernetes repository.
 add_kubernetes_repository() {
     msg "Adding the Kubernetes repository to the system."
+    # Recompute from the final VERSION: variables.sh freezes K_REPO at the
+    # default because it is sourced before read_parameters processes -v.
+    K_REPO="$K_CORE:/stable:/${VERSION}/deb/"
     echo "deb [signed-by=$K_GPG] $K_REPO /" | tee $K_LIST > /dev/null
     if [ $? -ne 0 ]; then
         execution_error "$ERR_FAKR"
@@ -649,7 +665,7 @@ configure_kubectl() {
 
     # Check if we already got a configuration.
     if [ ! -f $KBCTLCFG ]; then
-        if [ -n $MASTER_NODE]; then
+        if [ -n "$MASTER_NODE" ]; then
             # Copy and set permissions for the configuration file
             if [ -f $KBCTLOCFG ]; then
                 msg "Creating Kubectl user configuration."
@@ -684,7 +700,11 @@ generate_join_token() {
     local path="$1"
     wrn "Generating a new token."
     wrn "Using path: $path."
-    echo $(sudo kubeadm token create) > "$path/token"
+    # Already root; capture first so a failure aborts instead of writing an
+    # empty token file that would silently break worker joins.
+    local token
+    token=$(kubeadm token create) || execution_error "$ERR_FGT"
+    echo "$token" > "$path/token" || execution_error "$ERR_FGT"
 }
 
 # Function: Generates the discovery token CA certificate hash.
@@ -695,18 +715,22 @@ generate_join_hash() {
     local path="$1"
     wrn "Retrieving the discovery token CA certificate hash."
     wrn "Using path: $path."
-    echo $(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
+    # Capture first so a failure in the pipeline aborts instead of writing an
+    # empty hash file that would silently break worker joins.
+    local hash
+    hash=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
        openssl rsa -pubin -outform der 2>/dev/null | \
        openssl dgst -sha256 -hex | \
-       sed 's/^.* //') > "$path/hash"
+       sed 's/^.* //') || execution_error "$ERR_FGH"
+    echo "$hash" > "$path/hash" || execution_error "$ERR_FGH"
 }
 
 # Function: Generates the discovery token and its CA certificate hash.
 # Usage example:
 # generate_join_credentials
 generate_join_credentials() {
-    if [ ! -d "$directory" ]; then
-        execute mkdir -p $MNJCRDFS
+    if [ ! -d "$MNJCRDFS" ]; then
+        execute mkdir -p "$MNJCRDFS"
     fi
     generate_join_token "$MNJCRDFS"
     generate_join_hash "$MNJCRDFS"
