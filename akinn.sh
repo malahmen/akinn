@@ -2,8 +2,8 @@
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must be run as root. Trying with sudo..."
-    exec sudo HOME="$HOME" "$0" "$@"
-    exit 1
+    # Run through sh: a fresh clone is not executable and $0 may be relative (sh akinn.sh).
+    exec sudo HOME="$HOME" sh "$0" "$@"
 fi
 echo "Automated Kubernetes Installation for New Nodes - without user interaction."
 
