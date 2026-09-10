@@ -1,5 +1,5 @@
 # Variables
-HOSTNAME="" # Node reulting name (from master or worker option).
+NODE_NAME="" # Node resulting name (from master or worker option). Not HOSTNAME: that is bash-specific and undefined in dash.
 MASTER_USER=$(echo $SUDO_USER) # master node user, defaults to current.
 K_VERSIONS="" # Kubernetes versions
 CRDS_VERSIONS="" # Kubernetes Custom Resources Definitions versions

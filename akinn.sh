@@ -133,8 +133,9 @@ install_package kubectx
 msg "Disabling auto-update for instaled packages."
 execute apt-mark hold kubelet kubeadm kubectl kubectx # disable auto update
 # set the hostname for each node
+# NODE_NAME comes from -m/-w (validate_hostname), not from the machine.
 msg "Setting the node hostname."
-execute hostnamectl set-hostname $HOSTNAME 
+execute hostnamectl set-hostname "$NODE_NAME"
 # enable kubelet
 msg "Enabling Kubelet."
 execute systemctl enable --now kubelet
