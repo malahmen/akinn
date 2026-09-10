@@ -476,17 +476,25 @@ is_package_installed() {
     fi
 }
 
+# Function: apt-get without prompts. The script is unattended: a debconf or
+# conffile question during upgrade/install would hang or fail the run.
+# Usage example:
+# apt_get install -y curl
+apt_get() {
+    DEBIAN_FRONTEND=noninteractive apt-get "$@"
+}
+
 # Function: package installation with automated error recovery.
 # Usage example:
 # install_package containerd.io
 install_package() {
     local package=$1
     if ! is_package_installed $package; then
-        if ! apt-get install -y "$package"; then
+        if ! apt_get install -y "$package"; then
             wrn "Installation failed for $package, attempting to fix broken dependencies..."
-            execute apt-get --fix-broken install
+            execute apt_get --fix-broken install
             msg "Retrying installation of $package..."
-            if ! apt-get install -y "$package"; then
+            if ! apt_get install -y "$package"; then
                 execution_error "$ERR_IRF"
             fi
         fi
@@ -664,7 +672,19 @@ refresh_packages_list() {
 
 upgrade_installed_packages() {
     msg "Upgrading installed packages to their latest versions."
-    execute apt-get upgrade -y
+    execute apt_get upgrade -y
+}
+
+# Function: restrict the kubeconfig to its owner.
+# chown only when there is a sudo caller: run directly as root, SUDO_USER is
+# empty and `chown "" file` fails, which used to roll back a fresh cluster.
+# Usage example:
+# secure_kubeconfig
+secure_kubeconfig() {
+    if [ -n "$SUDO_USER" ]; then
+        execute chown "$SUDO_USER" "$KBCTLCFG"
+    fi
+    execute chmod 600 "$KBCTLCFG" # it holds cluster-admin credentials
 }
 
 # Function: Configure the kubectl tool.
@@ -685,14 +705,10 @@ configure_kubectl() {
             # Copy and set permissions for the configuration file
             if [ -f $KBCTLOCFG ]; then
                 msg "Creating Kubectl user configuration."
-                execute cp -i $KBCTLOCFG $KBCTLCFG
+                execute cp -f "$KBCTLOCFG" "$KBCTLCFG" # -f: unattended run, nobody can answer a -i prompt
                 msg "Setting configuration permissions."
-                #current_user=$(echo $SUDO_USER)
-                execute chown $(echo $SUDO_USER) $KBCTLCFG
-                execute chmod u+rx $KBCTLCFG
-                #execute chown $(id -u):$(id -g) $HOME/.kube/config
-                #execute chmod 600 $HOME/.kube/config
-                msg "Permissions set to owner read/execute only."
+                secure_kubeconfig
+                msg "Permissions set to owner read/write only."
             else
                 oerr "$KBCTLOCFG is missing."
             fi
@@ -700,8 +716,20 @@ configure_kubectl() {
             # This package is only needed in this situation.
             install_package sshpass
             # Get the Master node config into the Worker node
-            wrn "Copying configuration from Master node: $IP"
-            execute_non_blocking sshpass -f $MASTER_LOGIN scp $MASTER_USER@$IP:$KBCTLOCFG $KBCTLCFG
+            if [ -z "$MASTER_USER" ]; then
+                # run directly as root without -u: SUDO_USER is empty and "@$IP" is not a login
+                wrn "No master node user (-u) and no SUDO_USER: skipping the kubeconfig copy."
+            else
+                wrn "Copying configuration from Master node: $IP"
+                # accept-new: an unknown host key would otherwise prompt and abort sshpass.
+                # Not fatal (the node has joined), but say so instead of ending with "All done".
+                if sshpass -f "$MASTER_LOGIN" scp -o StrictHostKeyChecking=accept-new "$MASTER_USER@$IP:$KBCTLOCFG" "$KBCTLCFG"; then
+                    secure_kubeconfig
+                    msg "Kubectl configuration copied from the Master node."
+                else
+                    wrn "Could not copy $KBCTLOCFG from $MASTER_USER@$IP: kubectl is not configured on this node. Copy it to $KBCTLCFG manually."
+                fi
+            fi
         fi
     else
         msg "kubectl configuration already exists."
