@@ -137,7 +137,8 @@ disable_swap() {
 rollback_files(){
     # Only undo a kubeadm init/join this run performed; never reset a pre-existing cluster.
     if [ -n "$KUBEADM_RAN" ]; then
-        if command -v kubeadm &> /dev/null; then
+        # POSIX redirect: under dash "&>" backgrounds the command and the test is always true.
+        if command -v kubeadm >/dev/null 2>&1; then
             wrn "Reseting kubeadm."
             kubeadm reset -f
         fi
@@ -226,10 +227,10 @@ validate_architecture() {
 validate_hostname() {
     # master > worker
     if [ -n "$MASTER_NODE" ]; then
-        HOSTNAME=${MASTER_NODE}
+        NODE_NAME=${MASTER_NODE}
         WORKER_NODE="" # enforce Master
     elif [ -n "$WORKER_NODE" ]; then
-        HOSTNAME=${WORKER_NODE}
+        NODE_NAME=${WORKER_NODE}
     else
         parameter_missing_error "$ERR_HNNS"
     fi
@@ -765,5 +766,5 @@ join_master() {
     HASH=$(echo "$HASH" | xargs)
     KUBEADM_RAN=1
     execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
-    msg "$HOSTNAME joined Master Node."
+    msg "$NODE_NAME joined Master Node."
 }
