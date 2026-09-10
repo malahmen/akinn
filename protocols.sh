@@ -3,12 +3,14 @@ master_protocol() {
     # initialize the cluster
     if [ ! -f $KBCTLOCFG ]; then
         msg "Initializing the Master node."
+        KUBEADM_RAN=1
         execute kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR
     else
         wrn "Checking for a previous node."
         if ! kubeadm init --apiserver-advertise-address=$IP --pod-network-cidr=$CIDR; then
             wrn "Continuing without initializing a new node."
         else
+            KUBEADM_RAN=1
             msg "Managed to initialize the node."
         fi
     fi

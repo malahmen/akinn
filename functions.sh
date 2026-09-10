@@ -135,7 +135,8 @@ disable_swap() {
 # Usage example:
 # rollback_files
 rollback_files(){
-    if [ -f "$KBCTLCFG" ]; then
+    # Only undo a kubeadm init/join this run performed; never reset a pre-existing cluster.
+    if [ -n "$KUBEADM_RAN" ]; then
         if command -v kubeadm &> /dev/null; then
             wrn "Reseting kubeadm."
             kubeadm reset -f
@@ -147,7 +148,9 @@ rollback_files(){
     revert_to_backup "$CCFB" "$CCF" # rollback containerd configuration
     rm -rf "$DOCKER_GPG_TMP" # remove tmp files to avoid overwrite input
     rm -rf "$K_GPG_TMP"
-    rm -rf $HOME/.kube # clear kubectl configuration files
+    if [ -n "$KBCTLCFG_CREATED" ]; then
+        rm -f "$KBCTLCFG" # only the kubeconfig this run wrote; keep any pre-existing ~/.kube
+    fi
 }
 
 # Function: exits with message.
@@ -155,7 +158,10 @@ rollback_files(){
 # trap execution_error ERR
 # execution_error "$ERR"
 execution_error() {
-    rollback_files
+    # Validation-phase failures (bad flag, unknown version, ...) changed nothing: nothing to undo.
+    if [ -n "$INSTALL_STARTED" ]; then
+        rollback_files
+    fi
     local err_code="$1"
     if [ -n "$err_code" ]; then
         oerr "$err_code"
@@ -665,6 +671,7 @@ configure_kubectl() {
 
     # Check if we already got a configuration.
     if [ ! -f $KBCTLCFG ]; then
+        KBCTLCFG_CREATED=1 # whatever lands in $KBCTLCFG below is ours to remove on rollback
         if [ -n "$MASTER_NODE" ]; then
             # Copy and set permissions for the configuration file
             if [ -f $KBCTLOCFG ]; then
@@ -747,6 +754,7 @@ join_master() {
     # Clean variables (remove whitespace)
     TOKEN=$(echo "$TOKEN" | xargs)
     HASH=$(echo "$HASH" | xargs)
+    KUBEADM_RAN=1
     execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
     msg "$HOSTNAME joined Master Node."
 }

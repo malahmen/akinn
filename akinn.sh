@@ -59,6 +59,9 @@ fi
 
 # INSTALLING FLOW
 
+# From here on the system is modified: failures now roll back (see execution_error).
+INSTALL_STARTED=1
+
 # update and upgrade the system (all nodes)
 refresh_packages_list
 upgrade_installed_packages
