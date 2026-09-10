@@ -187,8 +187,14 @@ parameter_missing_error() {
 # Usage example:
 # load_versions
 load_versions() {
+    # Fetch first, parse after: inside 'curl | grep | ...' only the last command's
+    # status is visible, so a failed download used to yield an empty list and a
+    # misleading "invalid version" error instead of a fetch error.
+    local page
     msg "Loading CRDs versions."
-    if ! CRDS_VERSIONS=$(curl -s $CRDS_RELEASES | grep -Eo $re_crds_ver | sed 's/release-//' | sort | uniq); then
+    page=$(curl -fsSL "$CRDS_RELEASES") || execution_error "$ERR_FFCRDVER"
+    CRDS_VERSIONS=$(printf '%s\n' "$page" | grep -Eo "$re_crds_ver" | sed 's/release-//' | sort | uniq)
+    if [ -z "$CRDS_VERSIONS" ]; then
         execution_error "$ERR_FFCRDVER"
     fi
     msg "CRDs versions loaded."
@@ -196,7 +202,9 @@ load_versions() {
     # GitHub's releases page lists bare patch tags (v1.34.2). The k8s apt repo
     # (pkgs.k8s.io/.../stable:/v1.34/deb/) and the VERSION input are keyed on the
     # MINOR version, so collapse patch tags to minors for validation.
-    if ! K_VERSIONS=$(curl -s $K_RELEASES | grep -Eo $re_kver | sed -E 's/(v[0-9]+\.[0-9]+)\.[0-9]+/\1/' | sort | uniq); then
+    page=$(curl -fsSL "$K_RELEASES") || execution_error "$ERR_FFKVER"
+    K_VERSIONS=$(printf '%s\n' "$page" | grep -Eo "$re_kver" | sed -E 's/(v[0-9]+\.[0-9]+)\.[0-9]+/\1/' | sort | uniq)
+    if [ -z "$K_VERSIONS" ]; then
         execution_error "$ERR_FFKVER"
     fi
     msg "Kubernetes versions loaded."
@@ -376,7 +384,8 @@ validate_version() {
     elif [ "$type" = "crds" ]; then
         versions=$CRDS_VERSIONS
     fi
-    if ! echo "$versions" | grep -q "$version"; then
+    # Whole-line, literal match: a substring match let '-v 1' pass and build a bogus repo URL.
+    if ! echo "$versions" | grep -qxF -- "$version"; then
         execution_error "$ERR_IUV"
     fi
 }
