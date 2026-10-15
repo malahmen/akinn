@@ -1,0 +1,30 @@
+name: ci
+
+# The functions, one by one, under dash - Ubuntu's /bin/sh, the shell akinn
+# runs in. No root and no network: every system command is stubbed. A real
+# install needs a machine, which a runner is not meant to be turned into.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions
+        run: |
+          readlink -f /bin/sh
+          openssl version
+
+      - name: Syntax of every script
+        run: for f in *.sh tests/*.sh; do sh -n "$f" || exit 1; done
+
+      - name: tests
+        run: sh tests/test-functions.sh

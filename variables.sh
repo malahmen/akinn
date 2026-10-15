@@ -9,3 +9,6 @@ MNJCRDFS="$HOME/master_node"
 INSTALL_STARTED="" # set by akinn.sh when the install phase begins; execution_error only rolls back after this.
 KUBEADM_RAN="" # set right before this run calls kubeadm init/join; gates 'kubeadm reset' in rollback_files.
 KBCTLCFG_CREATED="" # set when this run writes $KBCTLCFG; rollback only removes a kubeconfig we created.
+RUN_DIR="" # this run's folder for backups and downloads (start_run); removed on success.
+DOCKER_GPG_TMP="" # set by start_run, inside RUN_DIR
+K_GPG_TMP="" # set by start_run, inside RUN_DIR

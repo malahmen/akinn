@@ -25,7 +25,8 @@ master_protocol() {
     
     msg "Generating 'join' credentials."
     generate_join_credentials
-    
+
+    finish_run
     exit 0
 }
 
@@ -36,6 +37,7 @@ worker_protocol() {
     # we need to fetch the configuration from the master node.
     msg "Configuring Kubectl."
     configure_kubectl
-    
+
+    finish_run
     exit 0
 }
