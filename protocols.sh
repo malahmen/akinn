@@ -21,12 +21,13 @@ master_protocol() {
     # install Custom Resources Definitions (MASTER ONLY)
     # needs kubectl installed and configured.
     msg "Installing Custom Resources Definitions."
+    backup_file "$(pwd)/crds.yaml"
     download_and_apply $CRDS_REPO/$CRDS/manifests/calico.yaml crds.yaml
     
     msg "Generating 'join' credentials."
     generate_join_credentials
 
-    finish_run
+    save_run
     exit 0
 }
 
@@ -38,6 +39,6 @@ worker_protocol() {
     msg "Configuring Kubectl."
     configure_kubectl
 
-    finish_run
+    save_run
     exit 0
 }

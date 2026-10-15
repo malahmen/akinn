@@ -13,7 +13,11 @@
 #   - Docker's repository is a signed-by list, an older entry is retired;
 #   - containerd's systemd cgroup switch is checked, against the real default
 #     configs of containerd 1.7 and 2.4;
-#   - kubectx is optional.
+#   - kubectx is optional;
+#   - a successful install keeps a record, and -x undoes exactly that: what it
+#     created goes, what it replaced comes back, its marks leave shared files
+#     (later edits stay), only the packages it installed are purged, only the
+#     Kubernetes/Calico iptables rules dropped.
 #
 # A real install is not tested here: that needs a machine (see README).
 # Run: sh tests/test-functions.sh   (dash on Ubuntu, as akinn itself runs)
@@ -47,7 +51,7 @@ export PATH="$T/bin:$PATH" STUB_LOG="$T/log"
 
 # ---- the files, as akinn.sh sources them ---------------------------------------------
 SCRIPT_DIR="$ROOT"
-for f in regex colors parameters constants variables errors functions protocols; do
+for f in regex colors parameters constants variables errors functions protocols uninstall; do
     # shellcheck disable=SC1090
     . "$ROOT/$f.sh"
 done
@@ -202,6 +206,166 @@ check "packaged (24.04): installed and held" [ "$(install_kubectx_if_packaged 2>
 APT_CACHE_RC=100
 check "not packaged (20.04, 22.04): skipped, nothing to hold" [ -z "$(install_kubectx_if_packaged 2>"$T/out")" ]
 check "  with a word about it" has "not packaged for this Ubuntu release" "$T/out"
+
+echo "## rollback of a folder the run created"
+dir_run() {
+    start_run > /dev/null; INSTALL_STARTED=1
+    backup_file "$T/newdir" dir > /dev/null; mkdir "$T/newdir"
+    backup_file "$T/newdir/f" > /dev/null; : > "$T/newdir/f"
+    execution_error "x"
+}
+fails dir_run
+check "a failed run removes the folder it created, with its files" [ ! -e "$T/newdir" ]
+
+echo "## -x and -f"
+OPTIND=1; read_parameters -x -f
+check "-x asks for an uninstall, -f forces it" [ "$UNINSTALL" = 1 -a "$FORCE" = 1 ]
+UNINSTALL=""; FORCE=""
+
+echo "## the install record, and -x"
+AKINN_STATE="$T/var/lib/akinn"; SYSCTL_CONF="$T/etc/sysctl.conf"
+CNI_CONF="$T/etc/cni/net.d"; CALICO_STATE="$T/var/lib/calico"
+K_LIST="$T/etc/apt/sources.list.d/kubernetes.list"; K_GPG="$T/etc/apt/keyrings/k.gpg"
+stub dpkg-query 'case " $DPKG_INSTALLED " in *" $3 "*) echo "install ok installed" ;; *) exit 1 ;; esac'
+stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; [ "$1" = -s ] && printf "%s\n" "$APT_SIM"; exit 0'
+stub apt-mark 'echo "apt-mark $*" >> "$STUB_LOG"; [ "$1" = showhold ] && printf "%s\n" $APT_HELD; exit 0'
+stub hostnamectl 'echo "hostnamectl $*" >> "$STUB_LOG"; exit "${HOSTNAMECTL_RC:-0}"'
+for c in swapoff swapon sysctl; do stub "$c" "echo \"$c \$*\" >> \"\$STUB_LOG\""; done
+stub iptables-save 'cat "$IPT_RULES"'
+stub iptables-restore 'cat > "$IPT_RULES.restored"'
+stub ip6tables-save 'exit 1'
+DPKG_INSTALLED="kubeadm"; APT_HELD="kubeadm"; APT_SIM="Purg kubelet [1.34.1-1.1]"
+IPT_RULES="$T/rules"
+export DPKG_INSTALLED APT_HELD APT_SIM IPT_RULES
+
+printf 'UUID=a / ext4 defaults 0 1\n/swap.img none swap sw 0 0\n#/old.img none swap sw 0 0\n' > "$FSTABF"
+printf 'deb http://archive.ubuntu.com/ubuntu noble main\ndeb [arch=amd64] https://download.docker.com/linux/ubuntu noble stable\n' > "$T/etc/apt/sources.list"
+printf 'old modules\n' > "$MODULES_CONF"
+rm -f "$SYSCTL_CONF" "$DOCKER_LIST"; rm -rf "$T/home" "$MNJCRDFS"; mkdir -p "$T/home" "$T/work"
+printf 'admin\n' > "$T/admin.conf"
+command -v openssl > /dev/null 2>&1 && openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/ca.key" -out "$K_CA" -days 1 -subj "/CN=kubernetes" > /dev/null 2>&1
+fake_install() {
+    HOME="$T/home"; KBCTLCFG="$HOME/.kube/config"; KBCTLOCFG="$T/admin.conf"; MASTER_NODE=m1
+    start_run; INSTALL_STARTED=1
+    disable_swap
+    retire_old_docker_sources
+    backup_file "$DOCKER_LIST"; printf 'deb new\n' > "$DOCKER_LIST"
+    backup_file "$MODULES_CONF"; printf 'overlay\n' > "$MODULES_CONF"
+    backup_file "$SYSCTL_CONF"; printf 'net.ipv4.ip_forward = 1\n' > "$SYSCTL_CONF"
+    install_package kubelet; install_package kubeadm; install_package curl
+    hold_packages kubelet kubeadm
+    set_node_hostname m1
+    configure_kubectl
+    cd "$T/work" && backup_file "$(pwd)/crds.yaml" && printf 'calico\n' > crds.yaml
+    command -v openssl > /dev/null 2>&1 && generate_join_credentials
+    KUBEADM_RAN=1
+    save_run
+}
+: > "$STUB_LOG"
+succeeds fake_install
+check "the install succeeds" [ $? -eq 0 ]
+REC=$(ls -d "$AKINN_STATE"/runs/0001-* 2>/dev/null)
+check "it keeps a record" [ -f "$REC/manifest" ]
+check "  that only root reads" [ "$(ls -ld "$AKINN_STATE" | cut -c1-10)" = "drwx------" ]
+check "  and says how to undo it" has "akinn.sh -x" "$T/out"
+check "the swap line is commented with akinn's mark" grep -qx "# akinn: /swap.img none swap sw 0 0" "$FSTABF"
+check "  an already commented one is left alone" grep -qx "#/old.img none swap sw 0 0" "$FSTABF"
+check "the packages it installed are recorded, not the one already there" [ "$(cat "$REC/packages")" = "kubelet
+curl" ]
+check "  so are the ones it held, not the one already held" [ "$(cat "$REC/held")" = kubelet ]
+check "  and the hostname before" [ "$(cat "$REC/hostname")" = "$(uname -n)" ]
+check "  and that it ran kubeadm" [ -e "$REC/kubeadm" ]
+check "the downloads are not kept" [ ! -e "$REC/docker.gpg" ]
+
+# What happens between the install and the uninstall: the admin edits the
+# shared files, the cluster leaves its traces.
+printf 'UUID=b /data ext4 defaults 0 2\n' >> "$FSTABF"
+printf 'deb http://example.com/extra stable main\n' >> "$T/etc/apt/sources.list"
+mkdir -p "$CNI_CONF" "$CALICO_STATE"
+: > "$CNI_CONF/10-calico.conflist"; : > "$CNI_CONF/calico-kubeconfig"; : > "$CNI_CONF/87-podman-bridge.conflist"
+cat > "$IPT_RULES" <<'RULES'
+*filter
+:INPUT ACCEPT [0:0]
+:KUBE-FORWARD - [0:0]
+:cali-FORWARD - [0:0]
+:DOCKER - [0:0]
+-A FORWARD -m comment --comment "kubernetes forwarding rules" -j KUBE-FORWARD
+-A FORWARD -m comment --comment "cali:wUHhoiAYhphO9Mso" -j cali-FORWARD
+-A FORWARD -o docker0 -j DOCKER
+COMMIT
+RULES
+before=$(uname -n)
+: > "$STUB_LOG"
+succeeds uninstall
+check "-x succeeds" [ $? -eq 0 ]
+check "  resets the cluster" has "kubeadm reset -f" "$STUB_LOG"
+check "  removes Calico's CNI files" [ ! -e "$CNI_CONF/10-calico.conflist" -a ! -e "$CNI_CONF/calico-kubeconfig" -a ! -e "$CALICO_STATE" ]
+check "  but not another tool's" [ -e "$CNI_CONF/87-podman-bridge.conflist" ]
+check "  drops the KUBE-* and cali- rules" sh -c '! grep -qE "KUBE-|cali" "$1"' _ "$IPT_RULES.restored"
+check "  keeps every other rule" has "-A FORWARD -o docker0 -j DOCKER" "$IPT_RULES.restored"
+check "  unholds what it held" grep -qx "apt-mark unhold kubelet" "$STUB_LOG"
+check "  purges what it installed" grep -qx "apt-get purge -y kubelet" "$STUB_LOG"
+check "  not the package that was already there" sh -c '! grep -q "purge.*kubeadm" "$1"' _ "$STUB_LOG"
+check "  leaves curl, saying so" has "Left installed (akinn installed them, but other software may use them now): curl" "$T/out"
+check "the swap line is back" grep -qx "/swap.img none swap sw 0 0" "$FSTABF"
+check "  the one commented before stays commented" grep -qx "#/old.img none swap sw 0 0" "$FSTABF"
+check "  the admin's later fstab line stays" grep -qx "UUID=b /data ext4 defaults 0 2" "$FSTABF"
+check "  and swap is turned back on" has "swapon -a" "$STUB_LOG"
+check "the older Docker entry is back" grep -qx "deb \[arch=amd64\] https://download.docker.com/linux/ubuntu noble stable" "$T/etc/apt/sources.list"
+check "  the admin's later source stays" has "deb http://example.com/extra stable main" "$T/etc/apt/sources.list"
+check "a file it replaced is restored" grep -qx "old modules" "$MODULES_CONF"
+check "files it created are removed" [ ! -e "$SYSCTL_CONF" -a ! -e "$DOCKER_LIST" -a ! -e "$T/work/crds.yaml" ]
+check "  the kubeconfig and the .kube it created too" [ ! -e "$T/home/.kube" ]
+if command -v openssl > /dev/null 2>&1; then
+    check "  and the join files with their folder" [ ! -e "$MNJCRDFS" ]
+fi
+check "the hostname is put back" has "hostnamectl set-hostname $before" "$STUB_LOG"
+first_line() { grep -nF -- "$1" "$T/out" | head -1 | cut -d: -f1; }
+check "files are undone before packages are purged" [ "$(first_line "Restored $MODULES_CONF")" -lt "$(first_line "Removing the packages")" ]
+check "the record goes once everything is undone" [ ! -e "$AKINN_STATE" ]
+
+echo "## -x: two installs, a failed step, a purge that would take more"
+two_runs() {
+    printf 'v0\n' > "$MODULES_CONF"
+    start_run > /dev/null; backup_file "$MODULES_CONF" > /dev/null; printf 'v1\n' > "$MODULES_CONF"; save_run > /dev/null
+    start_run > /dev/null; backup_file "$MODULES_CONF" > /dev/null; printf 'v2\n' > "$MODULES_CONF"; set_node_hostname m2; save_run > /dev/null
+}
+succeeds two_runs
+check "two installs, two records" [ "$(ls "$AKINN_STATE/runs" | wc -l)" -eq 2 ]
+# Each install records the name it found; -x puts back the first one's.
+printf 'm0\n' > "$(ls -d "$AKINN_STATE"/runs/0001-*)/hostname"
+printf 'm1\n' > "$(ls -d "$AKINN_STATE"/runs/0002-*)/hostname"
+HOSTNAMECTL_RC=1; export HOSTNAMECTL_RC
+check "a failed step fails -x" fails uninstall
+check "  which keeps the record, to run again" [ -d "$AKINN_STATE/runs" ]
+check "  and says so" has "The record stays" "$T/out"
+unset HOSTNAMECTL_RC
+: > "$STUB_LOG"
+succeeds uninstall
+check "run again, it goes back to the state before the first install" grep -qx v0 "$MODULES_CONF"
+check "  and to the hostname before it" grep -qx "hostnamectl set-hostname m0" "$STUB_LOG"
+APT_SIM=$(printf 'Purg containerd.io [2.1]\nRemv docker-ce [28.0]')
+: > "$STUB_LOG"
+succeeds purge_packages containerd.io
+check "a purge that would remove docker-ce does not run" sh -c '! grep -q "purge -y" "$1"' _ "$STUB_LOG"
+check "  and names it" has "also remove docker-ce" "$T/out"
+
+echo "## -x without a record"
+check "is refused" fails uninstall
+check "  pointing to -f" has "akinn.sh -x -f" "$T/out"
+printf '# akinn: /swap.img none swap sw 0 0\n#/old.img none swap sw 0 0\n' > "$FSTABF"
+mkdir -p "$MNJCRDFS"; : > "$MNJCRDFS/token"; : > "$MNJCRDFS/hash"
+FORCE=1; APT_HELD="kubelet kubeadm vim"
+: > "$STUB_LOG"
+succeeds uninstall
+check "-f succeeds" [ $? -eq 0 ]
+check "  resets the cluster" has "kubeadm reset -f" "$STUB_LOG"
+check "  removes the join files" [ ! -e "$MNJCRDFS" ]
+check "  takes its marks out of fstab" grep -qx "/swap.img none swap sw 0 0" "$FSTABF"
+check "  unholds only the Kubernetes packages" grep -qx "apt-mark unhold kubelet kubeadm" "$STUB_LOG"
+check "  purges nothing" sh -c '! grep -q purge "$1"' _ "$STUB_LOG"
+check "  and lists what it could not know" has "sudo apt-get purge kubelet" "$T/out"
+FORCE=""
 
 echo
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) failed"; exit 1; fi

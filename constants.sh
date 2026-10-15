@@ -27,3 +27,15 @@ K_CA="/etc/kubernetes/pki/ca.crt" # the cluster CA, for the join hash
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
 CRDS_REPO="https://raw.githubusercontent.com/projectcalico/calico" # Kubernetes Custom Resources Definitions repository
 KBCTLOCFG="/etc/kubernetes/admin.conf"
+
+# UNINSTALL (-x)
+AKINN_STATE="/var/lib/akinn" # each successful install's record: runs/NNNN-<time>/
+# The only packages -x removes, and only those akinn installed. curl, gpg,
+# sshpass & co. stay: other software may well use them by then.
+K8S_PACKAGES="kubelet kubeadm kubectl kubectx containerd.io"
+CNI_CONF="/etc/cni/net.d" # only Calico's files in it are removed
+CALICO_STATE="/var/lib/calico"
+# What akinn puts in front of a line it comments out in a file it shares with
+# the system: -x removes exactly that, leaving any later edit in place.
+SWAP_MARK="# akinn: "
+DOCKER_MARK="# moved to docker.list by akinn: "

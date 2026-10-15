@@ -17,6 +17,8 @@ display_usage() {
     -h HASH          Set the hash for the worker to join the master
     -a ARCH          Set the architecture
     -u MASTER_USER   SSH user on the master node (worker uses it to copy kubeconfig; defaults to \$SUDO_USER)
+    -x               Uninstall: undo what akinn's installs changed on this node (recorded in $AKINN_STATE)
+    -f               With -x, on a node installed before akinn kept a record: a best-effort cleanup
 EOF
 }
 
@@ -72,17 +74,21 @@ expand_path() {
 # backup_file "$origin"
 backup_file() {
     local origin="$1"
+    local kind="$2" # "edit": akinn only marks lines in it; "dir": a folder akinn may create
     local n
-    if [ -f "$origin" ]; then
+    if [ "$kind" = "dir" ]; then
+        # Only a folder this run creates is recorded: one that was there stays.
+        [ -d "$origin" ] || printf '%s\t%s\t%s\n' "-" "$origin" "dir" >> "$RUN_DIR/manifest"
+    elif [ -f "$origin" ]; then
         n=$(( $(wc -l < "$RUN_DIR/manifest") + 1 ))
         if ! cp -p "$origin" "$RUN_DIR/backup.$n"; then
             wrn "failed to backup $origin."
             return
         fi
-        printf '%s\t%s\n' "backup.$n" "$origin" >> "$RUN_DIR/manifest"
+        printf '%s\t%s\t%s\n' "backup.$n" "$origin" "$kind" >> "$RUN_DIR/manifest"
         msg "$origin backed up."
     else
-        printf '%s\t%s\n' "-" "$origin" >> "$RUN_DIR/manifest"
+        printf '%s\t%s\t%s\n' "-" "$origin" "$kind" >> "$RUN_DIR/manifest"
         msg "$origin does not exist yet; a rollback removes it if this run creates it."
     fi
 }
@@ -106,6 +112,29 @@ finish_run() {
     if [ -n "$RUN_DIR" ]; then
         rm -rf "$RUN_DIR"
     fi
+}
+
+# Function: keep a successful run's folder as its install record, for -x:
+# the manifest and the originals, the packages it installed and held, the
+# hostname before, whether it ran kubeadm. Numbered, so -x goes newest first.
+# Usage example:
+# save_run
+save_run() {
+    local n dest
+    [ -n "$RUN_DIR" ] || return 0
+    [ -n "$KUBEADM_RAN" ] && : > "$RUN_DIR/kubeadm"
+    rm -f "$DOCKER_GPG_TMP" "$K_GPG_TMP"
+    if mkdir -p "$AKINN_STATE/runs" && chmod 700 "$AKINN_STATE"; then
+        n=$(( $(ls -1 "$AKINN_STATE/runs" | wc -l) + 1 ))
+        dest="$AKINN_STATE/runs/$(printf '%04d' "$n")-$(date -u +%Y%m%dT%H%M%SZ)"
+        if mv "$RUN_DIR" "$dest"; then
+            RUN_DIR=""
+            msg "What this install changed is recorded in $dest: 'sudo sh akinn.sh -x' undoes it."
+            return 0
+        fi
+    fi
+    wrn "Could not keep the install record in $AKINN_STATE: -x will only be able to clean up with -f."
+    finish_run
 }
 
 # Function: updates destiny file with source file.
@@ -134,9 +163,11 @@ update_file() {
 # Usage example:
 # disable_swap
 disable_swap() {
-    backup_file "$FSTABF"
+    backup_file "$FSTABF" edit
     execute swapoff -a
-    execute sed -i '/ swap / s/^/#/' /etc/fstab
+    # Marked, and only lines not already commented: -x uncomments exactly
+    # these, whatever else was edited in fstab since.
+    execute sed -i "/^[[:space:]]*#/!{/[[:space:]]swap[[:space:]]/s/^/$SWAP_MARK/}" "$FSTABF"
 }
 
 # Function: undo this run's file changes, newest first, from its manifest.
@@ -155,8 +186,10 @@ rollback_files(){
         local tab
         tab=$(printf '\t')
         # Newest first, so a file backed up twice ends at its oldest state.
-        sed -n '1!G;h;$p' "$RUN_DIR/manifest" | while IFS="$tab" read -r saved origin; do
-            if [ "$saved" = "-" ]; then
+        sed -n '1!G;h;$p' "$RUN_DIR/manifest" | while IFS="$tab" read -r saved origin kind; do
+            if [ "$kind" = "dir" ]; then
+                rmdir "$origin" 2>/dev/null && wrn "Removed $origin (created by this run)."
+            elif [ "$saved" = "-" ]; then
                 if [ -e "$origin" ]; then
                     rm -f "$origin" && wrn "Removed $origin (created by this run)."
                 fi
@@ -523,7 +556,30 @@ install_package() {
                 execution_error "$ERR_IRF"
             fi
         fi
+        # A file, not a variable: kubectx is installed from a $(...) subshell.
+        [ -n "$RUN_DIR" ] && printf '%s\n' "$package" >> "$RUN_DIR/packages"
     fi
+}
+
+# Function: apt-mark hold, recording which packages were not held before
+# (-x releases only those).
+# Usage example:
+# hold_packages kubelet kubeadm kubectl
+hold_packages() {
+    local held p
+    held=$(apt-mark showhold 2>/dev/null)
+    for p in "$@"; do
+        printf '%s\n' "$held" | grep -qxF "$p" || printf '%s\n' "$p" >> "$RUN_DIR/held"
+    done
+    execute apt-mark hold "$@"
+}
+
+# Function: set the node's hostname, recording the one it had (for -x).
+# Usage example:
+# set_node_hostname "$NODE_NAME"
+set_node_hostname() {
+    uname -n > "$RUN_DIR/hostname"
+    execute hostnamectl set-hostname "$1"
 }
 
 # Function: download and apply from external sources with validation.
@@ -548,7 +604,7 @@ download_and_apply() {
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
-  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:" options; do
+  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:xf" options; do
     case "${options}" in
       m)
         MASTER_NODE=${OPTARG}
@@ -585,6 +641,12 @@ read_parameters() {
         ;;
       u)
         MASTER_USER=${OPTARG}
+        ;;
+      x)
+        UNINSTALL=1
+        ;;
+      f)
+        FORCE=1
         ;;
       *)
         execution_error "$ERR_UO"
@@ -638,8 +700,8 @@ retire_old_docker_sources() {
     grep -rlsF "$DOCKER_REPO" $APT_SOURCES 2>/dev/null | while read -r f; do
         [ "$f" = "$DOCKER_LIST" ] && continue
         wrn "Retiring an older Docker entry in $f (it now lives in $DOCKER_LIST)."
-        backup_file "$f"
-        execute sed -i '\#^[[:space:]]*deb .*download\.docker\.com/linux/ubuntu#s/^/# moved to docker.list by akinn: /' "$f"
+        backup_file "$f" edit
+        execute sed -i "\\#^[[:space:]]*deb .*download\\.docker\\.com/linux/ubuntu#s/^/$DOCKER_MARK/" "$f"
     done
 }
 
@@ -774,6 +836,7 @@ secure_kubeconfig() {
 configure_kubectl() {  
     # Ensure the .kube directory exists
     if [ ! -d "$HOME/.kube" ]; then
+        backup_file "$HOME/.kube" dir
         msg "Creating .kube directory."
         execute mkdir -p $HOME/.kube
     fi
@@ -781,6 +844,7 @@ configure_kubectl() {
     # Check if we already got a configuration.
     if [ ! -f $KBCTLCFG ]; then
         KBCTLCFG_CREATED=1 # whatever lands in $KBCTLCFG below is ours to remove on rollback
+        backup_file "$KBCTLCFG" # recorded as created, for -x
         if [ -n "$MASTER_NODE" ]; then
             # Copy and set permissions for the configuration file
             if [ -f $KBCTLOCFG ]; then
@@ -871,6 +935,9 @@ generate_join_hash() {
 # Usage example:
 # generate_join_credentials
 generate_join_credentials() {
+    backup_file "$MNJCRDFS" dir
+    backup_file "$MNJCRDFS/token"
+    backup_file "$MNJCRDFS/hash"
     if [ ! -d "$MNJCRDFS" ]; then
         execute mkdir -p "$MNJCRDFS"
     fi

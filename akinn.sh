@@ -19,9 +19,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/errors.sh" # loads the error messages.
 . "$SCRIPT_DIR/functions.sh" # loads the functions used.
 . "$SCRIPT_DIR/protocols.sh" # loads the instalation flows for each kind of node used.
+. "$SCRIPT_DIR/uninstall.sh" # loads the -x flow.
 
 # Read parameters from command line
 read_parameters "$@"
+
+# -x: undo, from the install records; nothing below runs.
+if [ -n "$UNINSTALL" ]; then
+    uninstall
+fi
+if [ -n "$FORCE" ]; then
+    execution_error "$ERR_FWX"
+fi
 
 # VALIDATION FLOW
 
@@ -61,7 +70,8 @@ fi
 
 # From here on the system is modified: failures now roll back (see execution_error).
 # Every file this run changes is backed up into its own folder first, and only
-# those are restored on failure; a successful run removes the folder.
+# those are restored on failure; a successful run keeps it in $AKINN_STATE
+# as its install record, for -x.
 start_run
 INSTALL_STARTED=1
 
@@ -138,11 +148,11 @@ KUBECTX_PKG=$(install_kubectx_if_packaged)
 
 msg "Disabling auto-update for instaled packages."
 # shellcheck disable=SC2086 # KUBECTX_PKG is empty or one word, on purpose unquoted
-execute apt-mark hold kubelet kubeadm kubectl $KUBECTX_PKG # disable auto update
+hold_packages kubelet kubeadm kubectl $KUBECTX_PKG # disable auto update
 # set the hostname for each node
 # NODE_NAME comes from -m/-w (validate_hostname), not from the machine.
 msg "Setting the node hostname."
-execute hostnamectl set-hostname "$NODE_NAME"
+set_node_hostname "$NODE_NAME"
 # enable kubelet
 msg "Enabling Kubelet."
 execute systemctl enable --now kubelet
@@ -158,6 +168,6 @@ else
     execution_error "$ERR_SE"
 fi
 
-finish_run
+save_run
 msg "All done. "
 exit 0

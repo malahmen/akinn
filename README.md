@@ -8,10 +8,11 @@ It supports configurations for multiple nodes, making it ideal for scalable depl
 
 > **Draft (2026-10-15).** The fixes below - per-run backups, owner-only join
 > files, the exact port check, architecture and IP detection, Docker's
-> `signed-by` repository, the containerd check and an optional `kubectx` - are
-> tested function by function (`tests/test-functions.sh`), not yet by a full
-> install on a real machine. Treat them as a draft until one master and one
-> worker have been installed with them, on amd64 and arm64.
+> `signed-by` repository, the containerd check, an optional `kubectx` - and the
+> uninstall (`-x`) are tested function by function (`tests/test-functions.sh`),
+> not yet by a full install on a real machine. Treat them as a draft until a
+> master has been installed and uninstalled with them (then a worker, and
+> arm64).
 
 ## Requirements
 - Ubuntu 18.04 LTS or newer (Ubuntu Server on a Raspberry Pi works). `kubectx` is installed where Ubuntu packages it (24.04 on) and skipped elsewhere
@@ -66,8 +67,10 @@ After installation, you can start setting up your Kubernetes cluster using the p
  - `-l` <**LOGIN**>: File path for the Master node SSH password; the Worker uses it to copy the kubeconfig from the Master. *(Worker only)*
  - `-u` <**MASTER_USER**>: SSH user on the Master node for that copy. Defaults to the user who ran `sudo`. *(Worker only, optional)*
  - `-a` <**ARCH**> Architecture: `amd64` or `arm64` (`x86_64`/`aarch64` are mapped). Defaults to `dpkg --print-architecture`. *(optional)*
+ - `-x`: Uninstall - undo what akinn's installs changed on this node (see [Uninstalling](#uninstalling)). Takes no other option.
+ - `-f`: With `-x`, on a node installed before akinn kept a record: a best-effort cleanup.
 
-*The `master node name` **or** the `worker node name` are __required__.*
+*The `master node name` **or** the `worker node name` are __required__ (except with `-x`).*
 
 ## Files
 - `akinn.sh`: The main installation script.
@@ -79,15 +82,55 @@ After installation, you can start setting up your Kubernetes cluster using the p
 - `errors.sh`: Error messages and handling for better troubleshooting.
 - `functions.sh`: Houses various functions used in the script for different tasks.
 - `protocols.sh`: The master and worker installation flows (`master_protocol`, `worker_protocol`).
+- `uninstall.sh`: The `-x` flow.
 
 ## What the script writes
 Besides the packages, repositories and kernel settings it installs system-wide, the script writes:
-- Every file the install changes - `/etc/fstab`, containerd's `config.toml`, the Docker and Kubernetes keyrings and repository lists, the kernel module and sysctl files - is first backed up into a folder of this run's own (`/tmp/akinn.XXXXXX`), and the change recorded. If the install fails, exactly those changes are undone, newest first, and files the run created are removed; on success the folder is deleted. (Fixed `/tmp/backup.*` paths used to let a failed run "restore" an older run's copies.)
+- Every file the install changes - `/etc/fstab`, containerd's `config.toml`, the Docker and Kubernetes keyrings and repository lists, the kernel module and sysctl files - is first backed up into a folder of this run's own (`/tmp/akinn.XXXXXX`), and the change recorded. If the install fails, exactly those changes are undone, newest first, and files the run created are removed. On success the folder is kept as the install record, in `/var/lib/akinn/runs/` (root only), for `-x`. (Fixed `/tmp/backup.*` paths used to let a failed run "restore" an older run's copies.)
+- Swap lines are commented out in `/etc/fstab` with a `# akinn: ` prefix, and only lines not already commented.
 - The Docker repository goes to `/etc/apt/sources.list.d/docker.list`, with its key in `/etc/apt/keyrings/docker.gpg` (`signed-by`), as Docker documents it. A Docker entry an older akinn added with `add-apt-repository` is commented out (and backed up): apt refuses the two together.
 - Master node: `/etc/kubernetes/admin.conf` is copied to `~/.kube/config` (owned by the user who ran `sudo`); the Calico manifest is saved as `crds.yaml` in the current directory; the join credentials are written to `~/master_node/token` and `~/master_node/hash`, the files to pass to a worker with `-t` and `-h` - readable by their owner only, and checked before they are written. **The token lasts 24 hours**; for a later join, create a new one on the master: `sudo kubeadm token create > ~/master_node/token`.
 - Worker node: the Master's `/etc/kubernetes/admin.conf` is copied over SSH (`sshpass` + `scp`, using `-l`/`-u`) to `~/.kube/config`. Note that this file grants cluster-admin access to the cluster.
 
 `~` is the home of the user who ran `sudo` (`HOME` is preserved across the re-execution).
+
+## Uninstalling
+```sh
+sudo sh akinn.sh -x
+```
+Undoes what akinn's installs changed on this node, newest first, from their
+records in `/var/lib/akinn/runs/`:
+- `kubeadm reset`, if akinn ran `kubeadm init`/`join` (a cluster that was there
+  before is left alone); Calico's files in `/etc/cni/net.d` and
+  `/var/lib/calico`; the `KUBE-*` and Calico iptables rules - every other rule
+  (Docker's, a firewall's) stays, it is not a flush;
+- files akinn created are removed (repository lists and keys, the kernel module
+  and sysctl files, `~/.kube/config`, `crds.yaml`, `~/master_node`), files it
+  replaced are put back; in `/etc/fstab` and the apt sources only akinn's
+  marks are taken out, so anything edited there since stays; swap is turned
+  back on, the hostname put back;
+- the packages akinn held are released; of the ones it installed, `kubelet`,
+  `kubeadm`, `kubectl`, `kubectx` and `containerd.io` are purged - unless apt
+  would take other packages with them (Docker depends on `containerd.io`), in
+  which case nothing is purged and it says what. Packages that were there
+  before stay. General tools akinn installed (`curl`, `gpg`, `sshpass`, ...)
+  stay too, listed: other software may use them by then.
+
+A step that fails is reported, the rest still runs, and the record is kept so
+`-x` can run again. A reboot afterwards unloads the kernel modules and drops the
+leftover network interfaces.
+
+A node installed by an akinn without records refuses `-x`. `-x -f` resets the
+cluster, removes the join files and Kubernetes iptables rules, releases the
+holds, and lists what it cannot tell apart from your own changes (packages,
+repository files, the swap lines an older akinn commented with a bare `#`, the
+hostname).
+
+### On a test machine
+Single node: install a master, check it (`kubectl get nodes`, the Calico pods),
+note `ls /var/lib/akinn/runs/*/`, then `sudo sh akinn.sh -x` and compare:
+`/etc/fstab`, `/etc/apt/sources.list.d/`, `apt-mark showhold`, `hostname`,
+`sudo iptables-save | grep -c KUBE` (0), `swapon --show`.
 
 ## Testing
 ```sh
@@ -96,7 +139,9 @@ sh tests/test-functions.sh
 The functions one by one, under `sh` (dash on Ubuntu, as akinn runs): no root,
 no network, nothing installed - every system command is a stub and every system
 path a temporary folder. containerd's cgroup switch is checked against the real
-default configurations of containerd 1.7 and 2.4 (`tests/fixtures/`). A full
+default configurations of containerd 1.7 and 2.4 (`tests/fixtures/`); an install
+record is made and `-x` run against it, with later edits to the shared files
+and other tools' rules and CNI files that must survive. A full
 install is not something a test can stand in for: that needs a machine.
 
 ## Contributing

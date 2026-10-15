@@ -14,3 +14,5 @@ PORT=6443 # Worker node needs the master's port number.
 TOKEN="" # Worker node needs a token to join master. 
 HASH="" # Worker node needs a hash to join master. 
 ARCH="$(dpkg --print-architecture)" # Architecture
+UNINSTALL="" # -x: undo what akinn's installs changed.
+FORCE="" # -f (with -x): best-effort cleanup of a node installed without a record.
