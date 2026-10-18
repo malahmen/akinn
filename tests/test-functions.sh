@@ -175,6 +175,45 @@ check "a failed join fails" fails join_master
 check "  and names the likeliest cause, an expired token" has "lasts 24 hours" "$T/out"
 unset KUBEADM_JOIN_RC
 
+echo "## the caller's files: in their home, not root's"
+# `sudo sh akinn.sh` resets HOME to /root on Ubuntu; the kubeconfig and join
+# files went there, owned by the caller and out of their reach (found on the
+# first real install, 2026-10-18).
+stub getent 'case "$2" in alice) echo "alice:x:1000:1000::/home/alice:/bin/bash" ;; *) exit 2 ;; esac'
+home_for() { ( HOME=/root SUDO_USER="$1"; . "$ROOT/variables.sh"; printf '%s|%s' "$KBCTLCFG" "$MNJCRDFS" ); }
+check "under sudo, the caller's home" [ "$(home_for alice)" = "/home/alice/.kube/config|/home/alice/master_node" ]
+check "run as root itself, root's" [ "$(home_for "")" = "/root/.kube/config|/root/master_node" ]
+check "an unknown caller falls back to HOME" [ "$(home_for nobody-here)" = "/root/.kube/config|/root/master_node" ]
+check "a quoted ~ is the caller's too" [ "$( CALLER_HOME=/home/alice; expand_path '~/token' )" = /home/alice/token ]
+stub chown 'echo "chown $*" >> "$STUB_LOG"'
+kube_dir_owned() {
+    rm -rf "$T/alice"; mkdir -p "$T/alice"; printf 'admin\n' > "$T/admin.conf"
+    SUDO_USER=alice; KBCTLCFG="$T/alice/.kube/config"; KBCTLOCFG="$T/admin.conf"; MASTER_NODE=m1
+    start_run; INSTALL_STARTED=1; configure_kubectl
+}
+: > "$STUB_LOG"
+succeeds kube_dir_owned
+check "a .kube it creates is given to the caller" has "chown alice: $T/alice/.kube" "$STUB_LOG"
+check "  and so is the config" has "chown alice $T/alice/.kube/config" "$STUB_LOG"
+rm -f "$T/bin/chown"
+stub kubectl 'echo "kubectl $*" >> "$STUB_LOG"'
+stub curl 'exit 0'
+: > "$STUB_LOG"
+succeeds download_and_apply https://example.invalid/calico.yaml "$T/crds.yaml"
+check "Calico is applied with admin.conf, not root's HOME" has "kubectl --kubeconfig $KBCTLOCFG apply" "$STUB_LOG"
+rm -f "$T/bin/kubectl" "$T/bin/curl" "$T/bin/getent"
+stub sshpass 'echo "sshpass $*" >> "$STUB_LOG"; exit 0'
+worker_copy() {
+    rm -rf "$T/bob"; mkdir -p "$T/bob"
+    SUDO_USER=""; MASTER_NODE=""; MASTER_USER=ubuntu; IP=10.0.0.9; MASTER_LOGIN="$T/login"
+    KBCTLCFG="$T/bob/.kube/config"; start_run; INSTALL_STARTED=1; configure_kubectl
+}
+: > "$STUB_LOG"
+succeeds worker_copy
+check "a worker copies the master user's kubeconfig" has "ubuntu@10.0.0.9:.kube/config $T/bob/.kube/config" "$STUB_LOG"
+check "  not root's admin.conf, which that user cannot read" sh -c '! grep -q "admin.conf" "$1"' _ "$STUB_LOG"
+rm -f "$T/bin/sshpass"; MASTER_USER=""
+
 echo "## Docker's repository"
 printf 'NAME="Ubuntu"\nVERSION_CODENAME=noble\n' > "$OS_RELEASE"
 printf 'deb http://archive.ubuntu.com/ubuntu noble main\ndeb [arch=arm64] https://download.docker.com/linux/ubuntu noble stable\n' > "$T/etc/apt/sources.list"
@@ -227,7 +266,7 @@ AKINN_STATE="$T/var/lib/akinn"; SYSCTL_CONF="$T/etc/sysctl.conf"
 CNI_CONF="$T/etc/cni/net.d"; CALICO_STATE="$T/var/lib/calico"
 K_LIST="$T/etc/apt/sources.list.d/kubernetes.list"; K_GPG="$T/etc/apt/keyrings/k.gpg"
 stub dpkg-query 'case " $DPKG_INSTALLED " in *" $3 "*) echo "install ok installed" ;; *) exit 1 ;; esac'
-stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; [ "$1" = -s ] && printf "%s\n" "$APT_SIM"; exit 0'
+stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; [ "$1" = -s ] && { [ "$2" = autoremove ] && printf "%s\n" "$APT_AUTO" || printf "%s\n" "$APT_SIM"; }; exit 0'
 stub apt-mark 'echo "apt-mark $*" >> "$STUB_LOG"; [ "$1" = showhold ] && printf "%s\n" $APT_HELD; exit 0'
 stub hostnamectl 'echo "hostnamectl $*" >> "$STUB_LOG"; exit "${HOSTNAMECTL_RC:-0}"'
 for c in swapoff swapon sysctl; do stub "$c" "echo \"$c \$*\" >> \"\$STUB_LOG\""; done
@@ -236,7 +275,13 @@ stub iptables-restore 'cat > "$IPT_RULES.restored"'
 stub ip6tables-save 'exit 1'
 DPKG_INSTALLED="kubeadm"; APT_HELD="kubeadm"; APT_SIM="Purg kubelet [1.34.1-1.1]"
 IPT_RULES="$T/rules"
-export DPKG_INSTALLED APT_HELD APT_SIM IPT_RULES
+# what apt calls orphans once kubelet is gone: its CNI plugins, and one that is
+# nothing to do with akinn and must stay
+APT_AUTO=$(printf 'Remv kubernetes-cni [1.7.1-1.1]\nRemv libunrelated1 [2.0]')
+export DPKG_INSTALLED APT_HELD APT_SIM APT_AUTO IPT_RULES
+KUBEADM_DIRS="$T/etc/kubernetes/pki $T/etc/kubernetes $T/var/lib/etcd $T/var/lib/kept"
+CNI_BIN="$T/opt/cni/bin"; mkdir -p "$CNI_BIN"; for f in calico calico-ipam flannel bridge; do : > "$CNI_BIN/$f"; done
+mkdir -p "$T/etc/kubernetes/pki" "$T/var/lib/etcd" "$T/var/lib/kept"; : > "$T/var/lib/kept/data"
 
 printf 'UUID=a / ext4 defaults 0 1\n/swap.img none swap sw 0 0\n#/old.img none swap sw 0 0\n' > "$FSTABF"
 printf 'deb http://archive.ubuntu.com/ubuntu noble main\ndeb [arch=amd64] https://download.docker.com/linux/ubuntu noble stable\n' > "$T/etc/apt/sources.list"
@@ -306,6 +351,13 @@ check "  keeps every other rule" has "-A FORWARD -o docker0 -j DOCKER" "$IPT_RUL
 check "  unholds what it held" grep -qx "apt-mark unhold kubelet" "$STUB_LOG"
 check "  purges what it installed" grep -qx "apt-get purge -y kubelet" "$STUB_LOG"
 check "  not the package that was already there" sh -c '! grep -q "purge.*kubeadm" "$1"' _ "$STUB_LOG"
+check "  then what apt pulled in for it, now orphaned" grep -qx "apt-get purge -y kubernetes-cni" "$STUB_LOG"
+check "  but no other orphan" sh -c '! grep -q "purge.*libunrelated1" "$1"' _ "$STUB_LOG"
+check "  never a blanket autoremove" sh -c '! grep -qx "apt-get.* autoremove -y.*" "$1"' _ "$STUB_LOG"
+check "the folders kubeadm reset left empty are gone" [ ! -e "$T/etc/kubernetes" -a ! -e "$T/var/lib/etcd" ]
+check "  one that is not empty stays" [ -e "$T/var/lib/kept/data" ]
+check "Calico's CNI plugins are removed" [ ! -e "$CNI_BIN/calico" -a ! -e "$CNI_BIN/calico-ipam" -a ! -e "$CNI_BIN/flannel" ]
+check "  another plugin stays, and so does its folder" [ -e "$CNI_BIN/bridge" ]
 check "  leaves curl, saying so" has "Left installed (akinn installed them, but other software may use them now): curl" "$T/out"
 check "the swap line is back" grep -qx "/swap.img none swap sw 0 0" "$FSTABF"
 check "  the one commented before stays commented" grep -qx "#/old.img none swap sw 0 0" "$FSTABF"

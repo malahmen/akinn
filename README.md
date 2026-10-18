@@ -6,13 +6,13 @@ Akinn (Automated Kubernetes Installation for New Nodes) is a tool designed to si
 
 It supports configurations for multiple nodes, making it ideal for scalable deployments.
 
-> **Draft (2026-10-15).** The fixes below - per-run backups, owner-only join
-> files, the exact port check, architecture and IP detection, Docker's
-> `signed-by` repository, the containerd check, an optional `kubectx` - and the
-> uninstall (`-x`) are tested function by function (`tests/test-functions.sh`),
-> not yet by a full install on a real machine. Treat them as a draft until a
-> master has been installed and uninstalled with them (then a worker, and
-> arm64).
+> **Tested on real installs (2026-10-18)**, in VMs with one NIC each, with the
+> defaults (Kubernetes v1.34, Calico v3.32.2): Ubuntu 24.04 amd64 master and
+> worker, an arm64 worker joining that master, an arm64 master, and a 22.04
+> amd64 master (`kubectx` skipped). Every node was then uninstalled with `-x`
+> and compared with a snapshot taken before the install: only the general
+> tools listed below stayed. Four bugs those runs found are fixed (the user's
+> files under `sudo`, the worker's kubeconfig copy, and two `-x` leftovers).
 
 ## Requirements
 - Ubuntu 18.04 LTS or newer (Ubuntu Server on a Raspberry Pi works). `kubectx` is installed where Ubuntu packages it (24.04 on) and skipped elsewhere
@@ -90,9 +90,11 @@ Besides the packages, repositories and kernel settings it installs system-wide, 
 - Swap lines are commented out in `/etc/fstab` with a `# akinn: ` prefix, and only lines not already commented.
 - The Docker repository goes to `/etc/apt/sources.list.d/docker.list`, with its key in `/etc/apt/keyrings/docker.gpg` (`signed-by`), as Docker documents it. A Docker entry an older akinn added with `add-apt-repository` is commented out (and backed up): apt refuses the two together.
 - Master node: `/etc/kubernetes/admin.conf` is copied to `~/.kube/config` (owned by the user who ran `sudo`); the Calico manifest is saved as `crds.yaml` in the current directory; the join credentials are written to `~/master_node/token` and `~/master_node/hash`, the files to pass to a worker with `-t` and `-h` - readable by their owner only, and checked before they are written. **The token lasts 24 hours**; for a later join, create a new one on the master: `sudo kubeadm token create > ~/master_node/token`.
-- Worker node: the Master's `/etc/kubernetes/admin.conf` is copied over SSH (`sshpass` + `scp`, using `-l`/`-u`) to `~/.kube/config`. Note that this file grants cluster-admin access to the cluster.
+- Worker node: the Master user's `~/.kube/config` - akinn's copy of `admin.conf` there - is copied over SSH (`sshpass` + `scp`, as the `-u` user with the `-l` password) to `~/.kube/config`. Not `admin.conf` itself: it is root's alone, so copying it as that user always failed. Note that this file grants cluster-admin access to the cluster.
 
-`~` is the home of the user who ran `sudo` (`HOME` is preserved across the re-execution).
+`~` is the home of the user who ran `sudo`, looked up from `SUDO_USER` - whether
+akinn re-executed itself or you typed `sudo sh akinn.sh` (which on Ubuntu resets
+`HOME` to `/root`). Run as root with no `sudo`, it is root's.
 
 ## Uninstalling
 ```sh
@@ -101,9 +103,11 @@ sudo sh akinn.sh -x
 Undoes what akinn's installs changed on this node, newest first, from their
 records in `/var/lib/akinn/runs/`:
 - `kubeadm reset`, if akinn ran `kubeadm init`/`join` (a cluster that was there
-  before is left alone); Calico's files in `/etc/cni/net.d` and
-  `/var/lib/calico`; the `KUBE-*` and Calico iptables rules - every other rule
-  (Docker's, a firewall's) stays, it is not a flush;
+  before is left alone), and the folders it leaves empty (`/etc/kubernetes`,
+  `/var/lib/etcd`); Calico's files in `/etc/cni/net.d`, `/var/lib/calico` and
+  its plugins in `/opt/cni/bin` (`calico`, `calico-ipam`, `flannel`); the
+  `KUBE-*` and Calico iptables rules - every other rule (Docker's, a
+  firewall's) stays, it is not a flush;
 - files akinn created are removed (repository lists and keys, the kernel module
   and sysctl files, `~/.kube/config`, `crds.yaml`, `~/master_node`), files it
   replaced are put back; in `/etc/fstab` and the apt sources only akinn's
@@ -112,7 +116,9 @@ records in `/var/lib/akinn/runs/`:
 - the packages akinn held are released; of the ones it installed, `kubelet`,
   `kubeadm`, `kubectl`, `kubectx` and `containerd.io` are purged - unless apt
   would take other packages with them (Docker depends on `containerd.io`), in
-  which case nothing is purged and it says what. Packages that were there
+  which case nothing is purged and it says what. Then what apt pulled in for
+  them (`kubernetes-cni`, `cri-tools`), once apt lists it as orphaned - never a
+  blanket `autoremove`. Packages that were there
   before stay. General tools akinn installed (`curl`, `gpg`, `sshpass`, ...)
   stay too, listed: other software may use them by then.
 

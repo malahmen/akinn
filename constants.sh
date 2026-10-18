@@ -27,14 +27,28 @@ K_CA="/etc/kubernetes/pki/ca.crt" # the cluster CA, for the join hash
 CRDS_RELEASES="https://github.com/projectcalico/calico/releases" # Kubernetes Custom Resources Definitions releases
 CRDS_REPO="https://raw.githubusercontent.com/projectcalico/calico" # Kubernetes Custom Resources Definitions repository
 KBCTLOCFG="/etc/kubernetes/admin.conf"
+# What a worker copies from the master: the master user's own copy of
+# admin.conf, which akinn put there. admin.conf itself is root's alone (0600),
+# so an scp of it as that user always failed. Relative: their home, on the master.
+MASTER_KBCTLCFG=".kube/config"
 
 # UNINSTALL (-x)
 AKINN_STATE="/var/lib/akinn" # each successful install's record: runs/NNNN-<time>/
 # The only packages -x removes, and only those akinn installed. curl, gpg,
 # sshpass & co. stay: other software may well use them by then.
 K8S_PACKAGES="kubelet kubeadm kubectl kubectx containerd.io"
+# What apt pulls in for those. Purged with them, and only once apt itself calls
+# them orphans: an `apt-get autoremove` would take every other orphan too.
+K8S_DEPENDENCIES="kubernetes-cni cri-tools"
+# Folders kubeadm reset empties and leaves behind. Removed only if empty; child first.
+KUBEADM_DIRS="/etc/kubernetes/pki /etc/kubernetes /var/lib/etcd"
 CNI_CONF="/etc/cni/net.d" # only Calico's files in it are removed
 CALICO_STATE="/var/lib/calico"
+# The plugins Calico's install-cni container copies onto every node (flannel's
+# included); ~190 MB that outlived -x until 2026-10-18. The folder goes too, if
+# nothing else is left in it.
+CNI_BIN="/opt/cni/bin"
+CALICO_CNI_BINS="calico calico-ipam flannel"
 # What akinn puts in front of a line it comments out in a file it shares with
 # the system: -x removes exactly that, leaving any later edit in place.
 SWAP_MARK="# akinn: "

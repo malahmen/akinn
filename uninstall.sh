@@ -67,10 +67,14 @@ uninstall() {
 # Usage example:
 # reset_cluster
 reset_cluster() {
-    local f
+    local f d
     if command -v kubeadm >/dev/null 2>&1; then
         msg "Resetting this node's Kubernetes state (kubeadm reset)."
         kubeadm reset -f || uninstall_failed "kubeadm reset failed."
+        # rmdir, not rm -r: only what reset left empty goes.
+        for d in $KUBEADM_DIRS; do
+            rmdir "$d" 2>/dev/null && msg "Removed the empty $d."
+        done
     else
         wrn "kubeadm is not installed: no cluster state to reset."
     fi
@@ -82,6 +86,10 @@ reset_cluster() {
     if [ -d "$CALICO_STATE" ]; then
         rm -rf "$CALICO_STATE" && msg "Removed $CALICO_STATE."
     fi
+    for f in $CALICO_CNI_BINS; do
+        [ -e "$CNI_BIN/$f" ] && rm -f "$CNI_BIN/$f" && msg "Removed $CNI_BIN/$f."
+    done
+    rmdir "$CNI_BIN" "${CNI_BIN%/*}" 2>/dev/null
     clean_k8s_iptables
 }
 
@@ -143,7 +151,26 @@ purge_packages() {
         return
     fi
     msg "Removing the packages akinn installed: $*"
-    apt_get purge -y "$@" || uninstall_failed "apt-get purge failed for: $*"
+    apt_get purge -y "$@" || { uninstall_failed "apt-get purge failed for: $*"; return; }
+    purge_orphaned_dependencies
+}
+
+# Function: purge what apt pulled in for the packages just purged
+# (K8S_DEPENDENCIES), once apt lists them as autoremovable - which is exactly
+# when nothing installed needs them any more. Found on a real uninstall:
+# kubernetes-cni stayed behind.
+# Usage example:
+# purge_orphaned_dependencies
+purge_orphaned_dependencies() {
+    local orphans p remove=""
+    orphans=$(apt-get -s autoremove 2>/dev/null | sed -nE 's/^(Purg|Remv) ([^ :]+).*/\2/p')
+    for p in $K8S_DEPENDENCIES; do
+        printf '%s\n' "$orphans" | grep -qxF "$p" && remove="$remove $p"
+    done
+    [ -n "$remove" ] || return 0
+    msg "Removing what apt installed for them:$remove"
+    # shellcheck disable=SC2086 # one package per word
+    apt_get purge -y $remove || uninstall_failed "apt-get purge failed for:$remove"
 }
 
 # Function: undo one run's file changes, newest first: remove what it created,

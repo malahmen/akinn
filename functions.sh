@@ -52,15 +52,15 @@ oerr(){
     fi
 }
 
-# Function: expand a leading ~ to $HOME without eval.
+# Function: expand a leading ~ to the caller's home (CALLER_HOME) without eval.
 # Using `eval` on a user-supplied path would let values like '$(reboot)' run as
 # root; this expands only a leading tilde and returns everything else verbatim.
 # Usage example:
 # path=$(expand_path "$input")
 expand_path() {
     case "$1" in
-        "~")   printf '%s\n' "$HOME" ;;
-        "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;;
+        "~")   printf '%s\n' "$CALLER_HOME" ;;
+        "~/"*) printf '%s\n' "$CALLER_HOME/${1#\~/}" ;;
         *)     printf '%s\n' "$1" ;;
     esac
 }
@@ -597,7 +597,8 @@ download_and_apply() {
             execution_error "$ERR_RF"
         fi
     fi
-    execute kubectl apply -f "$file"
+    # admin.conf, named: root's own HOME has no kubeconfig.
+    execute kubectl --kubeconfig "$KBCTLOCFG" apply -f "$file"
 }
 
 # Function: read parameters from command line.
@@ -834,11 +835,16 @@ secure_kubeconfig() {
 # Usage example:
 # configure_kubectl
 configure_kubectl() {  
-    # Ensure the .kube directory exists
-    if [ ! -d "$HOME/.kube" ]; then
-        backup_file "$HOME/.kube" dir
+    # Ensure the .kube directory exists, and is the caller's: kubectl writes
+    # its cache in it, and cannot in a folder root created.
+    local kube_dir="${KBCTLCFG%/*}"
+    if [ ! -d "$kube_dir" ]; then
+        backup_file "$kube_dir" dir
         msg "Creating .kube directory."
-        execute mkdir -p $HOME/.kube
+        execute mkdir -p "$kube_dir"
+        if [ -n "$SUDO_USER" ]; then
+            execute chown "$SUDO_USER:" "$kube_dir"
+        fi
     fi
 
     # Check if we already got a configuration.
@@ -867,11 +873,11 @@ configure_kubectl() {
                 wrn "Copying configuration from Master node: $IP"
                 # accept-new: an unknown host key would otherwise prompt and abort sshpass.
                 # Not fatal (the node has joined), but say so instead of ending with "All done".
-                if sshpass -f "$MASTER_LOGIN" scp -o StrictHostKeyChecking=accept-new "$MASTER_USER@$IP:$KBCTLOCFG" "$KBCTLCFG"; then
+                if sshpass -f "$MASTER_LOGIN" scp -o StrictHostKeyChecking=accept-new "$MASTER_USER@$IP:$MASTER_KBCTLCFG" "$KBCTLCFG"; then
                     secure_kubeconfig
                     msg "Kubectl configuration copied from the Master node."
                 else
-                    wrn "Could not copy $KBCTLOCFG from $MASTER_USER@$IP: kubectl is not configured on this node. Copy it to $KBCTLCFG manually."
+                    wrn "Could not copy ~$MASTER_USER/$MASTER_KBCTLCFG from $IP: kubectl is not configured on this node. Copy it to $KBCTLCFG manually."
                 fi
             fi
         fi

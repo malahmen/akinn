@@ -3,7 +3,9 @@
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must be run as root. Trying with sudo..."
     # Run through sh: a fresh clone is not executable and $0 may be relative (sh akinn.sh).
-    exec sudo HOME="$HOME" sh "$0" "$@"
+    # HOME is not carried over: root's tools keep root's, and the caller's
+    # files go to CALLER_HOME (variables.sh), found from SUDO_USER either way.
+    exec sudo sh "$0" "$@"
 fi
 echo "Automated Kubernetes Installation for New Nodes - without user interaction."
 
