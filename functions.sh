@@ -17,6 +17,8 @@ display_usage() {
     -h HASH          Set the hash for the worker to join the master
     -a ARCH          Set the architecture
     -u MASTER_USER   SSH user on the master node (worker uses it to copy kubeconfig; defaults to \$SUDO_USER)
+    -x               Uninstall: undo what akinn's installs changed on this node (recorded in $AKINN_STATE)
+    -f               With -x, on a node installed before akinn kept a record: a best-effort cleanup
 EOF
 }
 
@@ -50,54 +52,89 @@ oerr(){
     fi
 }
 
-# Function: expand a leading ~ to $HOME without eval.
+# Function: expand a leading ~ to the caller's home (CALLER_HOME) without eval.
 # Using `eval` on a user-supplied path would let values like '$(reboot)' run as
 # root; this expands only a leading tilde and returns everything else verbatim.
 # Usage example:
 # path=$(expand_path "$input")
 expand_path() {
     case "$1" in
-        "~")   printf '%s\n' "$HOME" ;;
-        "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;;
+        "~")   printf '%s\n' "$CALLER_HOME" ;;
+        "~/"*) printf '%s\n' "$CALLER_HOME/${1#\~/}" ;;
         *)     printf '%s\n' "$1" ;;
     esac
 }
 
-# Function: creates backup file from origin file.
+# Function: remember a file's state before this run changes it.
+# The copy goes into this run's folder and the change is recorded in its
+# manifest, so a rollback restores exactly what THIS run touched - never an
+# older run's leftovers. A file that does not exist yet is recorded too: if
+# this run creates it, the rollback removes it.
 # Usage example:
-# backup_file "$origin" "$destiny"
+# backup_file "$origin"
 backup_file() {
     local origin="$1"
-    local destiny="$2"
-    if [ -f "$origin" ]; then
-        msg "$origin exists, backing up."
-        if ! cp "$origin" "$destiny"; then
+    local kind="$2" # "edit": akinn only marks lines in it; "dir": a folder akinn may create
+    local n
+    if [ "$kind" = "dir" ]; then
+        # Only a folder this run creates is recorded: one that was there stays.
+        [ -d "$origin" ] || printf '%s\t%s\t%s\n' "-" "$origin" "dir" >> "$RUN_DIR/manifest"
+    elif [ -f "$origin" ]; then
+        n=$(( $(wc -l < "$RUN_DIR/manifest") + 1 ))
+        if ! cp -p "$origin" "$RUN_DIR/backup.$n"; then
             wrn "failed to backup $origin."
-        else
-            msg "$origin backed up."
+            return
         fi
-    else 
-        wrn "$origin not found, nothing to backup."
+        printf '%s\t%s\t%s\n' "backup.$n" "$origin" "$kind" >> "$RUN_DIR/manifest"
+        msg "$origin backed up."
+    else
+        printf '%s\t%s\t%s\n' "-" "$origin" "$kind" >> "$RUN_DIR/manifest"
+        msg "$origin does not exist yet; a rollback removes it if this run creates it."
     fi
 }
 
-# Function: updates origin file with backup file.
-# Backup file is deleted on success.
+# Function: create this run's working folder (backups, manifest, downloads).
 # Usage example:
-# revert_to_backup "$backup" "$origin"
-revert_to_backup() {
-    local backup="$1"
-    local origin="$2"
-    if [ -f "$backup" ]; then
-        msg "$backup exists, reverting."
-        if ! mv "$backup" "$origin"; then
-            wrn "failed to revert $origin."
-        else
-            msg "$origin reverted."
-        fi
-    else
-        wrn "$backup not found, nothing to revert."
+# start_run
+start_run() {
+    RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/akinn.XXXXXX") || execution_error "$ERR_FRD"
+    chmod 700 "$RUN_DIR" || execution_error "$ERR_FRD"
+    : > "$RUN_DIR/manifest"
+    DOCKER_GPG_TMP="$RUN_DIR/docker.gpg"
+    K_GPG_TMP="$RUN_DIR/kubernetes.gpg"
+    msg "Working folder for this run: $RUN_DIR"
+}
+
+# Function: a successful run keeps no backups behind.
+# Usage example:
+# finish_run
+finish_run() {
+    if [ -n "$RUN_DIR" ]; then
+        rm -rf "$RUN_DIR"
     fi
+}
+
+# Function: keep a successful run's folder as its install record, for -x:
+# the manifest and the originals, the packages it installed and held, the
+# hostname before, whether it ran kubeadm. Numbered, so -x goes newest first.
+# Usage example:
+# save_run
+save_run() {
+    local n dest
+    [ -n "$RUN_DIR" ] || return 0
+    [ -n "$KUBEADM_RAN" ] && : > "$RUN_DIR/kubeadm"
+    rm -f "$DOCKER_GPG_TMP" "$K_GPG_TMP"
+    if mkdir -p "$AKINN_STATE/runs" && chmod 700 "$AKINN_STATE"; then
+        n=$(( $(ls -1 "$AKINN_STATE/runs" | wc -l) + 1 ))
+        dest="$AKINN_STATE/runs/$(printf '%04d' "$n")-$(date -u +%Y%m%dT%H%M%SZ)"
+        if mv "$RUN_DIR" "$dest"; then
+            RUN_DIR=""
+            msg "What this install changed is recorded in $dest: 'sudo sh akinn.sh -x' undoes it."
+            return 0
+        fi
+    fi
+    wrn "Could not keep the install record in $AKINN_STATE: -x will only be able to clean up with -f."
+    finish_run
 }
 
 # Function: updates destiny file with source file.
@@ -126,12 +163,14 @@ update_file() {
 # Usage example:
 # disable_swap
 disable_swap() {
-    backup_file "$FSTABF" "$FSTABFB"
+    backup_file "$FSTABF" edit
     execute swapoff -a
-    execute sed -i '/ swap / s/^/#/' /etc/fstab
+    # Marked, and only lines not already commented: -x uncomments exactly
+    # these, whatever else was edited in fstab since.
+    execute sed -i "/^[[:space:]]*#/!{/[[:space:]]swap[[:space:]]/s/^/$SWAP_MARK/}" "$FSTABF"
 }
 
-# Function: rollback file changes
+# Function: undo this run's file changes, newest first, from its manifest.
 # Usage example:
 # rollback_files
 rollback_files(){
@@ -143,12 +182,25 @@ rollback_files(){
             kubeadm reset -f
         fi
     fi
-    revert_to_backup "$FSTABFB" "$FSTABF" # rollback fstab file
-    revert_to_backup "$DOCKER_GPG_BKP" "$DOCKER_GPG" # rollback Docker GPG key
-    revert_to_backup "$K_GPG_BKP" "$K_GPG" # rollback kubernetes GPG key
-    revert_to_backup "$CCFB" "$CCF" # rollback containerd configuration
-    rm -rf "$DOCKER_GPG_TMP" # remove tmp files to avoid overwrite input
-    rm -rf "$K_GPG_TMP"
+    if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/manifest" ]; then
+        local tab
+        tab=$(printf '\t')
+        # Newest first, so a file backed up twice ends at its oldest state.
+        sed -n '1!G;h;$p' "$RUN_DIR/manifest" | while IFS="$tab" read -r saved origin kind; do
+            if [ "$kind" = "dir" ]; then
+                rmdir "$origin" 2>/dev/null && wrn "Removed $origin (created by this run)."
+            elif [ "$saved" = "-" ]; then
+                if [ -e "$origin" ]; then
+                    rm -f "$origin" && wrn "Removed $origin (created by this run)."
+                fi
+            elif mv "$RUN_DIR/$saved" "$origin"; then
+                wrn "$origin reverted."
+            else
+                wrn "failed to revert $origin."
+            fi
+        done
+    fi
+    finish_run
     if [ -n "$KBCTLCFG_CREATED" ]; then
         rm -f "$KBCTLCFG" # only the kubeconfig this run wrote; keep any pre-existing ~/.kube
     fi
@@ -211,14 +263,18 @@ load_versions() {
     msg "Kubernetes versions loaded."
 }
 
-# Function: validates the architecture input
+# Function: validates the architecture: the apt lines are built from it.
+# Debian's names are accepted, and the kernel's (uname -m) mapped onto them.
 # Usage example:
 # validate_architecture "$ARCH"
 validate_architecture() {
-    local arch=$1
-    if [ -z "$arch" ]; then
-        parameter_missing_error "$ERR_ANS"
-    fi
+    case "$1" in
+        "")          parameter_missing_error "$ERR_ANS" ;;
+        amd64|arm64) ARCH="$1" ;;
+        x86_64)      ARCH=amd64; wrn "Architecture x86_64 is amd64 to apt; using amd64." ;;
+        aarch64)     ARCH=arm64; wrn "Architecture aarch64 is arm64 to apt; using arm64." ;;
+        *)           execution_error "$ERR_UARCH" ;;
+    esac
 }
 
 # Function: checks if a node name is given
@@ -272,8 +328,9 @@ ping_it() {
 # poke_it "$port"
 poke_it() {
     local this_port="$1"
-    # poke worker node port
-    if ss -tuln | grep -q ":$this_port"; then
+    # poke worker node port: ss's own filter is an exact port match - grepping
+    # ":$port" also matched 64430 when asked about 6443.
+    if [ -n "$(ss -tuln "sport = :$this_port" 2>/dev/null | tail -n +2)" ]; then
         wrn "Local port $this_port is in use."
     else
         msg "Local port $this_port is free."
@@ -499,7 +556,30 @@ install_package() {
                 execution_error "$ERR_IRF"
             fi
         fi
+        # A file, not a variable: kubectx is installed from a $(...) subshell.
+        [ -n "$RUN_DIR" ] && printf '%s\n' "$package" >> "$RUN_DIR/packages"
     fi
+}
+
+# Function: apt-mark hold, recording which packages were not held before
+# (-x releases only those).
+# Usage example:
+# hold_packages kubelet kubeadm kubectl
+hold_packages() {
+    local held p
+    held=$(apt-mark showhold 2>/dev/null)
+    for p in "$@"; do
+        printf '%s\n' "$held" | grep -qxF "$p" || printf '%s\n' "$p" >> "$RUN_DIR/held"
+    done
+    execute apt-mark hold "$@"
+}
+
+# Function: set the node's hostname, recording the one it had (for -x).
+# Usage example:
+# set_node_hostname "$NODE_NAME"
+set_node_hostname() {
+    uname -n > "$RUN_DIR/hostname"
+    execute hostnamectl set-hostname "$1"
 }
 
 # Function: download and apply from external sources with validation.
@@ -517,14 +597,15 @@ download_and_apply() {
             execution_error "$ERR_RF"
         fi
     fi
-    execute kubectl apply -f "$file"
+    # admin.conf, named: root's own HOME has no kubeconfig.
+    execute kubectl --kubeconfig "$KBCTLOCFG" apply -f "$file"
 }
 
 # Function: read parameters from command line.
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
-  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:" options; do
+  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:xf" options; do
     case "${options}" in
       m)
         MASTER_NODE=${OPTARG}
@@ -562,6 +643,12 @@ read_parameters() {
       u)
         MASTER_USER=${OPTARG}
         ;;
+      x)
+        UNINSTALL=1
+        ;;
+      f)
+        FORCE=1
+        ;;
       *)
         execution_error "$ERR_UO"
         ;;
@@ -574,7 +661,7 @@ read_parameters() {
 # install_docker_gpg_key
 install_docker_gpg_key() {
     msg "Backing up Docker GPG key."
-    backup_file "$DOCKER_GPG" "$DOCKER_GPG_BKP"
+    backup_file "$DOCKER_GPG"
 
     msg "Downloading the Docker GPG key."
     if ! curl -fsSL "$DOCKER_GPG_URL" | gpg --dearmour -o "$DOCKER_GPG_TMP"; then
@@ -583,17 +670,72 @@ install_docker_gpg_key() {
     msg "Docker GPG key downloaded."
 
     msg "Updating Docker GPG key."
+    execute mkdir -p "$(dirname "$DOCKER_GPG")" # the keyrings dir may not exist on an older release
     update_file "$DOCKER_GPG_TMP" "$DOCKER_GPG"
+    execute chmod a+r "$DOCKER_GPG" # apt reads it as _apt, not as root
     msg "Docker GPG key updated."
 }
 
+# Function: the release codename for the Docker repository line.
+# /etc/os-release first (always present); lsb_release only as a fallback.
+# Usage example:
+# codename=$(release_codename)
+release_codename() {
+    local codename=""
+    if [ -f "$OS_RELEASE" ]; then
+        codename=$(sed -n 's/^VERSION_CODENAME=//p' "$OS_RELEASE" | tr -d '"')
+    fi
+    if [ -z "$codename" ] && command -v lsb_release >/dev/null 2>&1; then
+        codename=$(lsb_release -cs)
+    fi
+    printf '%s\n' "$codename"
+}
+
+# Function: comment out a Docker entry an older run added with
+# add-apt-repository. Left next to docker.list, apt refuses the pair
+# ("Conflicting values set for option Signed-By"). Backed up first.
+# Usage example:
+# retire_old_docker_sources
+retire_old_docker_sources() {
+    # shellcheck disable=SC2086 # APT_SOURCES is a list of paths
+    grep -rlsF "$DOCKER_REPO" $APT_SOURCES 2>/dev/null | while read -r f; do
+        [ "$f" = "$DOCKER_LIST" ] && continue
+        wrn "Retiring an older Docker entry in $f (it now lives in $DOCKER_LIST)."
+        backup_file "$f" edit
+        execute sed -i "\\#^[[:space:]]*deb .*download\\.docker\\.com/linux/ubuntu#s/^/$DOCKER_MARK/" "$f"
+    done
+}
+
 # Function: Add Docker repository.
+# Usage example:
+# add_docker_repository
 add_docker_repository() {
+    local codename
     msg "Adding the Docker repository to the system."
-    if ! add-apt-repository "deb [arch=$ARCH] $DOCKER_REPO $(lsb_release -cs) stable" -y; then
+    codename=$(release_codename)
+    if [ -z "$codename" ]; then
+        execution_error "$ERR_FADR"
+    fi
+    retire_old_docker_sources
+    backup_file "$DOCKER_LIST"
+    if ! printf 'deb [arch=%s signed-by=%s] %s %s stable\n' "$ARCH" "$DOCKER_GPG" "$DOCKER_REPO" "$codename" > "$DOCKER_LIST"; then
         execution_error "$ERR_FADR"
     fi
     msg "Docker repository added."
+}
+
+# Function: switch containerd's runc to the systemd cgroup driver, as kubelet
+# expects, and check that it took. Every containerd from 1.6 to 2.4 generates
+# "SystemdCgroup = false" in its default config; one that stops doing so fails
+# here, instead of leaving a node that runs with the wrong driver.
+# Usage example:
+# enable_systemd_cgroup "$CCF"
+enable_systemd_cgroup() {
+    local file="$1"
+    execute sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' "$file"
+    if ! grep -q 'SystemdCgroup = true' "$file"; then
+        execution_error "$ERR_FSC"
+    fi
 }
 
 install_containerd() {
@@ -602,7 +744,7 @@ install_containerd() {
     install_package containerd.io
 
     msg "Backing up Containerd configuration."
-    backup_file "$CCF" "$CCFB"
+    backup_file "$CCF"
 
     # configure containerd - DO NOT SKIP THIS STEP even if using docker shell script
     msg "Generating the default configuration for Containerd with superuser privileges, discarding any output and errors."
@@ -610,7 +752,7 @@ install_containerd() {
     # would only exit the subshell, leaving a truncated config.toml behind.
     containerd config default > "$CCF" 2>/dev/null || execution_error "$ERR_FCC"
     msg "Updating the default configuration for Containerd."
-    execute sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' $CCF
+    enable_systemd_cgroup "$CCF"
 
     # Restarting containerd to apply new configurations
     msg "Restarting containerd to apply new configurations."
@@ -638,11 +780,11 @@ install_kubernetes_gpg_key(){
     K_GPG_URL="$K_CORE:/stable:/$VERSION/deb/Release.key"
 
     msg "Backing up current Kubernetes GPG key."
-    backup_file "$K_GPG" "$K_GPG_BKP"
+    backup_file "$K_GPG"
 
     msg "Downloading the Kubernetes GPG key."
     msg "Using url: $K_GPG_URL"
-    if ! curl -fsSL $K_GPG_URL | gpg --dearmor -o $K_GPG_TMP; then
+    if ! curl -fsSL "$K_GPG_URL" | gpg --dearmor -o "$K_GPG_TMP"; then
         execution_error "$ERR_FFKKF"
     fi
     msg "Kubernetes GPG key downloaded."
@@ -659,8 +801,8 @@ add_kubernetes_repository() {
     # Recompute from the final VERSION: variables.sh freezes K_REPO at the
     # default because it is sourced before read_parameters processes -v.
     K_REPO="$K_CORE:/stable:/${VERSION}/deb/"
-    echo "deb [signed-by=$K_GPG] $K_REPO /" | tee $K_LIST > /dev/null
-    if [ $? -ne 0 ]; then
+    backup_file "$K_LIST"
+    if ! echo "deb [signed-by=$K_GPG] $K_REPO /" > "$K_LIST"; then
         execution_error "$ERR_FAKR"
     fi
     msg "Kubernetes repository added."
@@ -693,15 +835,22 @@ secure_kubeconfig() {
 # Usage example:
 # configure_kubectl
 configure_kubectl() {  
-    # Ensure the .kube directory exists
-    if [ ! -d "$HOME/.kube" ]; then
+    # Ensure the .kube directory exists, and is the caller's: kubectl writes
+    # its cache in it, and cannot in a folder root created.
+    local kube_dir="${KBCTLCFG%/*}"
+    if [ ! -d "$kube_dir" ]; then
+        backup_file "$kube_dir" dir
         msg "Creating .kube directory."
-        execute mkdir -p $HOME/.kube
+        execute mkdir -p "$kube_dir"
+        if [ -n "$SUDO_USER" ]; then
+            execute chown "$SUDO_USER:" "$kube_dir"
+        fi
     fi
 
     # Check if we already got a configuration.
     if [ ! -f $KBCTLCFG ]; then
         KBCTLCFG_CREATED=1 # whatever lands in $KBCTLCFG below is ours to remove on rollback
+        backup_file "$KBCTLCFG" # recorded as created, for -x
         if [ -n "$MASTER_NODE" ]; then
             # Copy and set permissions for the configuration file
             if [ -f $KBCTLOCFG ]; then
@@ -724,11 +873,11 @@ configure_kubectl() {
                 wrn "Copying configuration from Master node: $IP"
                 # accept-new: an unknown host key would otherwise prompt and abort sshpass.
                 # Not fatal (the node has joined), but say so instead of ending with "All done".
-                if sshpass -f "$MASTER_LOGIN" scp -o StrictHostKeyChecking=accept-new "$MASTER_USER@$IP:$KBCTLOCFG" "$KBCTLCFG"; then
+                if sshpass -f "$MASTER_LOGIN" scp -o StrictHostKeyChecking=accept-new "$MASTER_USER@$IP:$MASTER_KBCTLCFG" "$KBCTLCFG"; then
                     secure_kubeconfig
                     msg "Kubectl configuration copied from the Master node."
                 else
-                    wrn "Could not copy $KBCTLOCFG from $MASTER_USER@$IP: kubectl is not configured on this node. Copy it to $KBCTLCFG manually."
+                    wrn "Could not copy ~$MASTER_USER/$MASTER_KBCTLCFG from $IP: kubectl is not configured on this node. Copy it to $KBCTLCFG manually."
                 fi
             fi
         fi
@@ -737,50 +886,74 @@ configure_kubectl() {
     fi
 }
 
-# Function: Generates the discovery token.
-# Will save it in a file in a configurable location.
+# Function: write a secret: readable by its owner only, and owned by the user
+# who ran sudo, so they can read it without root. (The join files were 0644.)
+# Usage example:
+# write_private "$path" "$value"
+write_private() {
+    local path="$1"
+    local value="$2"
+    ( umask 077 && printf '%s\n' "$value" > "$path" ) || return 1
+    if [ -n "$SUDO_USER" ]; then
+        chown "$SUDO_USER" "$path" || return 1
+    fi
+}
+
+# Function: Generates the discovery token, into "$path/token".
+# A kubeadm token lasts 24 hours: a worker joining later needs a new one.
 # Usage example:
 # generate_join_token "some-path"
 generate_join_token() {
     local path="$1"
+    local token
     wrn "Generating a new token."
     wrn "Using path: $path."
-    # Already root; capture first so a failure aborts instead of writing an
-    # empty token file that would silently break worker joins.
-    local token
+    # Captured and checked before it is written: an empty or malformed file
+    # would only fail later, on the worker, with a less useful message.
     token=$(kubeadm token create) || execution_error "$ERR_FGT"
-    echo "$token" > "$path/token" || execution_error "$ERR_FGT"
+    if ! printf '%s\n' "$token" | grep -Eqx '[a-z0-9]{6}\.[a-z0-9]{16}'; then
+        execution_error "$ERR_IJT"
+    fi
+    write_private "$path/token" "$token" || execution_error "$ERR_FGT"
+    wrn "The token is valid for 24 hours. After that, create a new one here: sudo kubeadm token create > $path/token"
 }
 
-# Function: Generates the discovery token CA certificate hash.
-# Will save it in a file in a configurable location.
+# Function: the discovery token CA certificate hash, into "$path/hash".
+# Step by step, each checked: in the old one-line pipeline only sed's exit
+# status counted, so a failed openssl still wrote an (empty) hash.
+# `openssl pkey` reads any key type; `rsa` only RSA.
 # Usage example:
 # generate_join_hash "some-path"
 generate_join_hash() {
     local path="$1"
+    local pubkey hash
     wrn "Retrieving the discovery token CA certificate hash."
     wrn "Using path: $path."
-    # Capture first so a failure in the pipeline aborts instead of writing an
-    # empty hash file that would silently break worker joins.
-    local hash
-    hash=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
-       openssl rsa -pubin -outform der 2>/dev/null | \
-       openssl dgst -sha256 -hex | \
-       sed 's/^.* //') || execution_error "$ERR_FGH"
-    echo "$hash" > "$path/hash" || execution_error "$ERR_FGH"
+    pubkey=$(openssl x509 -pubkey -noout -in "$K_CA") || execution_error "$ERR_FGH"
+    hash=$(printf '%s\n' "$pubkey" | openssl pkey -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
+    if ! printf '%s\n' "$hash" | grep -Eqx '[0-9a-f]{64}'; then
+        execution_error "$ERR_IJH"
+    fi
+    write_private "$path/hash" "$hash" || execution_error "$ERR_FGH"
 }
 
 # Function: Generates the discovery token and its CA certificate hash.
 # Usage example:
 # generate_join_credentials
 generate_join_credentials() {
+    backup_file "$MNJCRDFS" dir
+    backup_file "$MNJCRDFS/token"
+    backup_file "$MNJCRDFS/hash"
     if [ ! -d "$MNJCRDFS" ]; then
         execute mkdir -p "$MNJCRDFS"
+    fi
+    execute chmod 700 "$MNJCRDFS"
+    if [ -n "$SUDO_USER" ]; then
+        execute chown "$SUDO_USER" "$MNJCRDFS"
     fi
     generate_join_token "$MNJCRDFS"
     generate_join_hash "$MNJCRDFS"
 }
-
 # Function: Add current node to a Master Node.
 # Starting the kubeadm in the MASTER NODE will generate the complete join command.
 # Usage example:
@@ -793,6 +966,23 @@ join_master() {
     TOKEN=$(echo "$TOKEN" | xargs)
     HASH=$(echo "$HASH" | xargs)
     KUBEADM_RAN=1
-    execute_sensitive kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"
+    # Not execute_sensitive: its message would hide the likeliest cause, an expired token.
+    if ! kubeadm join "$IP:$PORT" --token "$TOKEN" --discovery-token-ca-cert-hash "sha256:$HASH"; then
+        execution_error "$ERR_JOIN"
+    fi
     msg "$NODE_NAME joined Master Node."
+}
+
+# Function: install kubectx where the release packages it (Ubuntu 24.04 on),
+# and say so where it does not: it is a convenience, kubectl works without it.
+# Prints the package to hold, or nothing.
+# Usage example:
+# extra=$(install_kubectx_if_packaged)
+install_kubectx_if_packaged() {
+    if apt-cache show kubectx >/dev/null 2>&1; then
+        install_package kubectx >&2
+        printf 'kubectx\n'
+    else
+        wrn "kubectx is not packaged for this Ubuntu release (it is from 24.04 on) - skipped; kubectl works without it." >&2
+    fi
 }

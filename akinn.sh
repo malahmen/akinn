@@ -3,7 +3,9 @@
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must be run as root. Trying with sudo..."
     # Run through sh: a fresh clone is not executable and $0 may be relative (sh akinn.sh).
-    exec sudo HOME="$HOME" sh "$0" "$@"
+    # HOME is not carried over: root's tools keep root's, and the caller's
+    # files go to CALLER_HOME (variables.sh), found from SUDO_USER either way.
+    exec sudo sh "$0" "$@"
 fi
 echo "Automated Kubernetes Installation for New Nodes - without user interaction."
 
@@ -19,9 +21,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/errors.sh" # loads the error messages.
 . "$SCRIPT_DIR/functions.sh" # loads the functions used.
 . "$SCRIPT_DIR/protocols.sh" # loads the instalation flows for each kind of node used.
+. "$SCRIPT_DIR/uninstall.sh" # loads the -x flow.
 
 # Read parameters from command line
 read_parameters "$@"
+
+# -x: undo, from the install records; nothing below runs.
+if [ -n "$UNINSTALL" ]; then
+    uninstall
+fi
+if [ -n "$FORCE" ]; then
+    execution_error "$ERR_FWX"
+fi
 
 # VALIDATION FLOW
 
@@ -60,6 +71,10 @@ fi
 # INSTALLING FLOW
 
 # From here on the system is modified: failures now roll back (see execution_error).
+# Every file this run changes is backed up into its own folder first, and only
+# those are restored on failure; a successful run keeps it in $AKINN_STATE
+# as its install record, for -x.
+start_run
 INSTALL_STARTED=1
 
 # update and upgrade the system (all nodes)
@@ -77,8 +92,9 @@ msg "Swap disabled successfully."
 
 # add kernel modules to load on boot for containerd (all nodes)
 msg "Adding kernel modules for containerd to be loaded on boot up."
+backup_file "$MODULES_CONF"
 if ! echo "overlay
-br_netfilter" | tee /etc/modules-load.d/containerd.conf > /dev/null; then
+br_netfilter" | tee "$MODULES_CONF" > /dev/null; then
     execution_error "$ERR_FWMLC"
 fi
 msg "Loading modules now."
@@ -87,9 +103,10 @@ execute modprobe br_netfilter
 
 # configure kernel parameters for networking and IP forwarding related to Kubernetes (all nodes)
 msg "Configuring system kernel parameters for networking and IP forwarding."
+backup_file "$SYSCTL_CONF"
 if ! echo "net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1" | tee /etc/sysctl.d/kubernetes.conf > /dev/null; then
+net.ipv4.ip_forward = 1" | tee "$SYSCTL_CONF" > /dev/null; then
     execution_error "$ERR_FWKP"
 fi
 
@@ -101,7 +118,6 @@ execute sysctl --system
 msg "Installing required packages."
 install_package curl
 install_package gnupg2
-install_package software-properties-common
 install_package apt-transport-https
 install_package ca-certificates 
 install_package gpg
@@ -128,14 +144,17 @@ msg "Installing Kubernetes packages."
 install_package kubelet
 install_package kubeadm
 install_package kubectl
-install_package kubectx
+# kubectx only where the release packages it (Ubuntu 24.04 on): a hard
+# requirement made every 20.04/22.04 install fail at this line.
+KUBECTX_PKG=$(install_kubectx_if_packaged)
 
 msg "Disabling auto-update for instaled packages."
-execute apt-mark hold kubelet kubeadm kubectl kubectx # disable auto update
+# shellcheck disable=SC2086 # KUBECTX_PKG is empty or one word, on purpose unquoted
+hold_packages kubelet kubeadm kubectl $KUBECTX_PKG # disable auto update
 # set the hostname for each node
 # NODE_NAME comes from -m/-w (validate_hostname), not from the machine.
 msg "Setting the node hostname."
-execute hostnamectl set-hostname "$NODE_NAME"
+set_node_hostname "$NODE_NAME"
 # enable kubelet
 msg "Enabling Kubelet."
 execute systemctl enable --now kubelet
@@ -151,5 +170,6 @@ else
     execution_error "$ERR_SE"
 fi
 
+save_run
 msg "All done. "
 exit 0
