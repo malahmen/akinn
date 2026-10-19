@@ -213,14 +213,19 @@ EOF
 }
 
 # Function: -x -f on a node without a record (installed before akinn kept
-# one). Undoes only what is unmistakably akinn's or harmless to undo, then
-# lists what it cannot know. Exits.
+# one). Undoes only what is unmistakably akinn's - its holds on the Kubernetes
+# packages, its join files, its marks in fstab and the apt sources - then lists
+# what it cannot know. The cluster is one of those: a node with no record may
+# run one akinn never installed, so kubeadm reset (and Calico's files, plugins
+# and rules with it) runs only when asked for with -k. Exits.
 # Usage example:
 # uninstall_unrecorded
 uninstall_unrecorded() {
     local held f
     wrn "No install record in $AKINN_STATE: a best-effort cleanup (-f)."
-    reset_cluster
+    if [ -n "$RESET_K8S" ]; then
+        reset_cluster
+    fi
     held=$(apt-mark showhold 2>/dev/null | grep -xE 'kubelet|kubeadm|kubectl|kubectx')
     if [ -n "$held" ]; then
         # shellcheck disable=SC2086
@@ -237,6 +242,10 @@ uninstall_unrecorded() {
         fi
     done
     wrn "Not undone - without a record akinn cannot tell its changes from yours:"
+    if [ -z "$RESET_K8S" ] && command -v kubeadm >/dev/null 2>&1; then
+        wrn "  cluster:   this node's Kubernetes was left as it is. If akinn set it up: sudo sh akinn.sh -x -f -k"
+        wrn "             (kubeadm reset, then Calico's CNI files, plugins and iptables rules)"
+    fi
     wrn "  packages:  sudo apt-get purge kubelet kubeadm kubectl kubectx containerd.io   (if nothing else uses them)"
     for f in "$DOCKER_LIST" "$DOCKER_GPG" "$K_LIST" "$K_GPG" "$MODULES_CONF" "$SYSCTL_CONF" "$CCF" "$KBCTLCFG"; do
         [ -e "$f" ] && wrn "  file:      $f"

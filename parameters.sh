@@ -16,3 +16,4 @@ HASH="" # Worker node needs a hash to join master.
 ARCH="$(dpkg --print-architecture)" # Architecture
 UNINSTALL="" # -x: undo what akinn's installs changed.
 FORCE="" # -f (with -x): best-effort cleanup of a node installed without a record.
+RESET_K8S="" # -k (with -x -f): also reset that node's Kubernetes - its cluster may not be akinn's.

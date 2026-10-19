@@ -257,9 +257,9 @@ fails dir_run
 check "a failed run removes the folder it created, with its files" [ ! -e "$T/newdir" ]
 
 echo "## -x and -f"
-OPTIND=1; read_parameters -x -f
-check "-x asks for an uninstall, -f forces it" [ "$UNINSTALL" = 1 -a "$FORCE" = 1 ]
-UNINSTALL=""; FORCE=""
+OPTIND=1; read_parameters -x -f -k
+check "-x asks for an uninstall, -f forces it, -k adds the cluster reset" [ "$UNINSTALL" = 1 -a "$FORCE" = 1 -a "$RESET_K8S" = 1 ]
+UNINSTALL=""; FORCE=""; RESET_K8S=""
 
 echo "## the install record, and -x"
 AKINN_STATE="$T/var/lib/akinn"; SYSCTL_CONF="$T/etc/sysctl.conf"
@@ -409,15 +409,27 @@ printf '# akinn: /swap.img none swap sw 0 0\n#/old.img none swap sw 0 0\n' > "$F
 mkdir -p "$MNJCRDFS"; : > "$MNJCRDFS/token"; : > "$MNJCRDFS/hash"
 FORCE=1; APT_HELD="kubelet kubeadm vim"
 : > "$STUB_LOG"
+mkdir -p "$CNI_CONF" "$CNI_BIN"; : > "$CNI_CONF/10-calico.conflist"; : > "$CNI_BIN/flannel"
 succeeds uninstall
 check "-f succeeds" [ $? -eq 0 ]
-check "  resets the cluster" has "kubeadm reset -f" "$STUB_LOG"
+# No record, so nothing says this node's cluster is akinn's: left alone (item 98).
+check "  leaves the cluster alone: no kubeadm reset" sh -c '! grep -q "kubeadm reset" "$1"' _ "$STUB_LOG"
+check "  nor Calico's CNI configuration" [ -e "$CNI_CONF/10-calico.conflist" ]
+check "  nor the CNI plugins" [ -e "$CNI_BIN/flannel" ]
+check "  and says how to reset it if akinn set it up" has "akinn.sh -x -f -k" "$T/out"
 check "  removes the join files" [ ! -e "$MNJCRDFS" ]
 check "  takes its marks out of fstab" grep -qx "/swap.img none swap sw 0 0" "$FSTABF"
 check "  unholds only the Kubernetes packages" grep -qx "apt-mark unhold kubelet kubeadm" "$STUB_LOG"
 check "  purges nothing" sh -c '! grep -q purge "$1"' _ "$STUB_LOG"
 check "  and lists what it could not know" has "sudo apt-get purge kubelet" "$T/out"
-FORCE=""
+RESET_K8S=1
+: > "$STUB_LOG"
+succeeds uninstall
+check "-f -k resets the cluster" has "kubeadm reset -f" "$STUB_LOG"
+check "  with Calico's CNI configuration" [ ! -e "$CNI_CONF/10-calico.conflist" ]
+check "  and plugins" [ ! -e "$CNI_BIN/flannel" ]
+check "  and no longer offers -k" sh -c '! grep -q -- "-x -f -k" "$1"' _ "$T/out"
+FORCE=""; RESET_K8S=""
 
 echo
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) failed"; exit 1; fi
