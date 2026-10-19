@@ -26,6 +26,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Read parameters from command line
 read_parameters "$@"
 
+# -k needs -x -f: without a record nothing says the cluster is akinn's, so
+# resetting it must be asked for; with one, -x decides from the record.
+if [ -n "$RESET_K8S" ] && { [ -z "$UNINSTALL" ] || [ -z "$FORCE" ]; }; then
+    execution_error "$ERR_KWXF"
+fi
 # -x: undo, from the install records; nothing below runs.
 if [ -n "$UNINSTALL" ]; then
     uninstall

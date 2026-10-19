@@ -19,6 +19,7 @@ display_usage() {
     -u MASTER_USER   SSH user on the master node (worker uses it to copy kubeconfig; defaults to \$SUDO_USER)
     -x               Uninstall: undo what akinn's installs changed on this node (recorded in $AKINN_STATE)
     -f               With -x, on a node installed before akinn kept a record: a best-effort cleanup
+    -k               With -x -f, also reset that node's Kubernetes (kubeadm reset, Calico's files and rules)
 EOF
 }
 
@@ -605,7 +606,7 @@ download_and_apply() {
 # Usage example:
 # read_parameters "$@"
 read_parameters() {
-  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:xf" options; do
+  while getopts ":m:w:l:v:c:n:i:p:t:h:a:u:xfk" options; do
     case "${options}" in
       m)
         MASTER_NODE=${OPTARG}
@@ -648,6 +649,9 @@ read_parameters() {
         ;;
       f)
         FORCE=1
+        ;;
+      k)
+        RESET_K8S=1
         ;;
       *)
         execution_error "$ERR_UO"
