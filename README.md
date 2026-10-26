@@ -69,7 +69,7 @@ After installation, you can start setting up your Kubernetes cluster using the p
  - `-a` <**ARCH**> Architecture: `amd64` or `arm64` (`x86_64`/`aarch64` are mapped). Defaults to `dpkg --print-architecture`. *(optional)*
  - `-x`: Uninstall - undo what akinn's installs changed on this node (see [Uninstalling](#uninstalling)). Takes no other option.
  - `-f`: With `-x`, on a node installed before akinn kept a record: a best-effort cleanup.
- - `-k`: With `-x -f`, also reset that node's Kubernetes (`kubeadm reset`, Calico's files, plugins and rules).
+ - `-k`: With `-x -f`, also reset that node's Kubernetes (`kubeadm reset`, Calico's files, plugins and rules) and release the holds on its packages.
 
 *The `master node name` **or** the `worker node name` are __required__ (except with `-x`).*
 
@@ -128,14 +128,17 @@ A step that fails is reported, the rest still runs, and the record is kept so
 leftover network interfaces.
 
 A node installed by an akinn without records refuses `-x`. `-x -f` undoes only
-what is unmistakably akinn's - it releases the holds on the Kubernetes packages,
-removes the join files (`~/master_node`) and takes akinn's marks out of
+what is unmistakably akinn's - it removes the join files (`~/master_node`) and takes akinn's marks out of
 `/etc/fstab` and the apt sources - and lists what it cannot tell apart from your
 own changes (packages, repository files, the swap lines an older akinn commented
-with a bare `#`, the hostname). **It leaves the cluster alone**: without a
-record, nothing says the cluster on that node is akinn's. If it is, add `-k`:
-`sudo sh akinn.sh -x -f -k` also runs `kubeadm reset` and removes Calico's CNI
-configuration, plugins (`calico`, `calico-ipam`, `flannel`) and iptables rules.
+with a bare `#`, the hostname). **It leaves the cluster alone**, and the holds
+on the Kubernetes packages with it: without a record, nothing says the cluster
+on that node is akinn's, and kubeadm's own install guide holds those packages
+too - releasing them under a cluster that stays would let `apt upgrade` move
+kubelet past its control plane. If the cluster is akinn's, add `-k`:
+`sudo sh akinn.sh -x -f -k` also runs `kubeadm reset`, removes Calico's CNI
+configuration, plugins (`calico`, `calico-ipam`, `flannel`) and iptables rules,
+and releases the holds.
 
 ### On a test machine
 Single node: install a master, check it (`kubectl get nodes`, the Calico pods),

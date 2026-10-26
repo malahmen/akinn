@@ -419,7 +419,9 @@ check "  nor the CNI plugins" [ -e "$CNI_BIN/flannel" ]
 check "  and says how to reset it if akinn set it up" has "akinn.sh -x -f -k" "$T/out"
 check "  removes the join files" [ ! -e "$MNJCRDFS" ]
 check "  takes its marks out of fstab" grep -qx "/swap.img none swap sw 0 0" "$FSTABF"
-check "  unholds only the Kubernetes packages" grep -qx "apt-mark unhold kubelet kubeadm" "$STUB_LOG"
+# The holds stay with the cluster: released only by -k (item 208).
+check "  keeps the package holds" sh -c '! grep -q "apt-mark unhold" "$1"' _ "$STUB_LOG"
+check "  and says how to release them" has "sudo apt-mark unhold kubelet kubeadm" "$T/out"
 check "  purges nothing" sh -c '! grep -q purge "$1"' _ "$STUB_LOG"
 check "  and lists what it could not know" has "sudo apt-get purge kubelet" "$T/out"
 RESET_K8S=1
@@ -429,6 +431,8 @@ check "-f -k resets the cluster" has "kubeadm reset -f" "$STUB_LOG"
 check "  with Calico's CNI configuration" [ ! -e "$CNI_CONF/10-calico.conflist" ]
 check "  and plugins" [ ! -e "$CNI_BIN/flannel" ]
 check "  and no longer offers -k" sh -c '! grep -q -- "-x -f -k" "$1"' _ "$T/out"
+check "  releases only the Kubernetes packages' holds" grep -qx "apt-mark unhold kubelet kubeadm" "$STUB_LOG"
+check "  and no longer lists them as kept" sh -c '! grep -q "holds:" "$1"' _ "$T/out"
 FORCE=""; RESET_K8S=""
 
 echo
